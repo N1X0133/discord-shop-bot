@@ -15,7 +15,7 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 # Файл для хранения данных пользователей
 DATA_FILE = 'user_data.json'
 
-# ID администраторов (добавлены новые)
+# ID администраторов
 ADMIN_IDS = [
     927642459998138418,  # Главный админ
     500965898476322817,  # Новый админ 1
@@ -43,30 +43,30 @@ class ShopView(View):
     def __init__(self):
         super().__init__(timeout=None)
         
-        # Создаем выпадающий список с товарами
+        # Создаем выпадающий список с товарами (БЕЗ ОПИСАНИЙ)
         self.shop_items = [
             # Глава 1: Расходники
-            {"name": "💊 Реанимнабор", "price": 150, "description": "Воскрешает павшего товарища"},
-            {"name": "💉 Набор для самореанимации", "price": 200, "description": "Позволяет воскреснуть самостоятельно"},
-            {"name": "🛡️ Ремкоплект для брони", "price": 100, "description": "Восстанавливает прочность брони"},
-            {"name": "🔫 MG Ammo", "price": 50, "description": "Патроны для пулемета (30 шт.)"},
-            {"name": "🎯 Sniper Ammo", "price": 75, "description": "Патроны для снайперской винтовки (20 шт.)"},
+            {"name": "💊 Реанимнабор", "price": 150, "description": "Нет описания"},
+            {"name": "💉 Набор для самореанимации", "price": 200, "description": "Нет описания"},
+            {"name": "🛡️ Ремкоплект для брони", "price": 100, "description": "Нет описания"},
+            {"name": "🔫 MG Ammo", "price": 50, "description": "Нет описания"},
+            {"name": "🎯 Sniper Ammo", "price": 75, "description": "Нет описания"},
             
             # Глава 2: Модули
-            {"name": "🔇 Глушитель", "price": 300, "description": "Делает выстрелы бесшумными"},
-            {"name": "📦 Увеличенный магазин (винтовка)", "price": 250, "description": "+10 патронов для винтовки"},
-            {"name": "📦 Увеличенный магазин (пистолет)", "price": 200, "description": "+8 патронов для пистолета"},
-            {"name": "📦 Увеличенный магазин (ПП)", "price": 225, "description": "+15 патронов для пистолета-пулемета"},
-            {"name": "📦 Увеличенный магазин (снайперская винтовка)", "price": 275, "description": "+5 патронов для снайперской винтовки"},
-            {"name": "🥁 Барабанный магазин (винтовка)", "price": 400, "description": "+30 патронов для винтовки"},
+            {"name": "🔇 Глушитель", "price": 300, "description": "Нет описания"},
+            {"name": "📦 Увеличенный магазин (винтовка)", "price": 250, "description": "Нет описания"},
+            {"name": "📦 Увеличенный магазин (пистолет)", "price": 200, "description": "Нет описания"},
+            {"name": "📦 Увеличенный магазин (ПП)", "price": 225, "description": "Нет описания"},
+            {"name": "📦 Увеличенный магазин (снайперская винтовка)", "price": 275, "description": "Нет описания"},
+            {"name": "🥁 Барабанный магазин (винтовка)", "price": 400, "description": "Нет описания"},
             
             # Глава 3: Спец. вооружение
-            {"name": "🔫 Тяжелый пулемет", "price": 800, "description": "Мощный пулемет с высокой скорострельностью"},
-            {"name": "⚡ Тяжелый пулемет MK2", "price": 1200, "description": "Улучшенная версия с повышенным уроном"},
-            {"name": "🎯 Тяжелая снайперская", "price": 1000, "description": "Снайперская винтовка большого калибра"},
-            {"name": "⭐ Тяжелая снайперская MK2", "price": 1500, "description": "Элитная снайперская винтовка с тепловизором"},
-            {"name": "🔫 Штурмовой дробовик", "price": 600, "description": "Полуавтоматический дробовик для ближнего боя"},
-            {"name": "🔫 Тяжелый револьвер MK2", "price": 700, "description": "Усиленный револьвер с бронебойными патронами"},
+            {"name": "🔫 Тяжелый пулемет", "price": 800, "description": "Нет описания"},
+            {"name": "⚡ Тяжелый пулемет MK2", "price": 1200, "description": "Нет описания"},
+            {"name": "🎯 Тяжелая снайперская", "price": 1000, "description": "Нет описания"},
+            {"name": "⭐ Тяжелая снайперская MK2", "price": 1500, "description": "Нет описания"},
+            {"name": "🔫 Штурмовой дробовик", "price": 600, "description": "Нет описания"},
+            {"name": "🔫 Тяжелый револьвер MK2", "price": 700, "description": "Нет описания"},
         ]
         
         # Создаем выпадающий список
@@ -75,7 +75,7 @@ class ShopView(View):
             options.append(
                 discord.SelectOption(
                     label=item["name"],
-                    description=item["description"],
+                    description=" ",  # Пустое описание
                     value=item["name"]
                 )
             )
@@ -246,11 +246,107 @@ class ShopView(View):
         
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-# Команда для открытия магазина
+# НОВАЯ КОМАНДА: !команды
+@bot.command(name='команды')
+async def show_commands(ctx):
+    """Показать все доступные команды"""
+    
+    # Команды для всех пользователей
+    user_commands = discord.Embed(
+        title="📋 ДОСТУПНЫЕ КОМАНДЫ",
+        description="**Команды для всех пользователей:**",
+        color=discord.Color.blue()
+    )
+    user_commands.add_field(
+        name="!магазин", 
+        value="🛒 Открыть магазин и купить предметы", 
+        inline=False
+    )
+    user_commands.add_field(
+        name="!баланс", 
+        value="💰 Проверить свой баланс монет", 
+        inline=False
+    )
+    user_commands.add_field(
+        name="!баланс @пользователь", 
+        value="👤 Проверить баланс другого пользователя", 
+        inline=False
+    )
+    user_commands.add_field(
+        name="!инвентарь", 
+        value="📦 Посмотреть свои полученные предметы", 
+        inline=False
+    )
+    user_commands.add_field(
+        name="!инвентарь @пользователь", 
+        value="📦 Посмотреть инвентарь другого пользователя", 
+        inline=False
+    )
+    user_commands.add_field(
+        name="!история", 
+        value="📜 Показать историю своих покупок", 
+        inline=False
+    )
+    user_commands.add_field(
+        name="!команды", 
+        value="❓ Показать это сообщение", 
+        inline=False
+    )
+    user_commands.set_footer(text="by Ilya Vetrov")
+    
+    await ctx.send(embed=user_commands)
+    
+    # Если пользователь админ - показываем дополнительные команды
+    if is_admin(ctx.author.id):
+        admin_commands = discord.Embed(
+            title="👑 АДМИНИСТРАТОРСКИЕ КОМАНДЫ",
+            description="**Команды только для администраторов:**",
+            color=discord.Color.gold()
+        )
+        admin_commands.add_field(
+            name="!датьмонет @пользователь сумма", 
+            value="💰 Выдать монеты пользователю", 
+            inline=False
+        )
+        admin_commands.add_field(
+            name="!невыдано", 
+            value="📋 Показать все предметы, ожидающие выдачи", 
+            inline=False
+        )
+        admin_commands.add_field(
+            name="!выдано @пользователь", 
+            value="✅ Выдать ВСЕ предметы пользователю", 
+            inline=False
+        )
+        admin_commands.add_field(
+            name="!выдано", 
+            value="✅ Выдать ВСЕ предметы ВСЕМ пользователям", 
+            inline=False
+        )
+        admin_commands.add_field(
+            name="!история @пользователь", 
+            value="📜 Посмотреть историю покупок любого пользователя", 
+            inline=False
+        )
+        admin_commands.add_field(
+            name="!статистика", 
+            value="📊 Показать общую статистику магазина", 
+            inline=False
+        )
+        admin_commands.add_field(
+            name="!админы", 
+            value="👑 Список всех администраторов", 
+            inline=False
+        )
+        admin_commands.set_footer(text="by Ilya Vetrov")
+        
+        await ctx.send(embed=admin_commands)
+
+# Команда для открытия магазина (обновлена - убраны описания)
 @bot.command(name='магазин')
 async def shop(ctx):
     embed = discord.Embed(
-        title="🛒 Магазин",
+        title="🛒 МАГАЗИН",
         description="**Глава 1: Расходники**\n"
                    "💊 Реанимнабор — 150 монет\n"
                    "💉 Набор для самореанимации — 200 монет\n"
@@ -273,7 +369,8 @@ async def shop(ctx):
                    "⭐ Тяжелая снайперская MK2 — 1500 монет\n"
                    "🔫 Штурмовой дробовик — 600 монет\n"
                    "🔫 Тяжелый револьвер MK2 — 700 монет\n\n"
-                   "*Товары будут выданы администратором в конце недели*",
+                   "*Товары будут выданы администратором в конце недели*\n"
+                   "`!команды` - список всех команд",
         color=discord.Color.gold()
     )
     embed.set_footer(text="by Ilya Vetrov")
@@ -281,7 +378,7 @@ async def shop(ctx):
     view = ShopView()
     await ctx.send(embed=embed, view=view)
 
-# Команда для просмотра невыданных предметов (улучшенная)
+# Команда для просмотра невыданных предметов
 @bot.command(name='невыдано')
 async def pending_items(ctx):
     if not is_admin(ctx.author.id):
@@ -342,7 +439,7 @@ async def pending_items(ctx):
     embed.set_footer(text="by Ilya Vetrov")
     await ctx.send(embed=embed)
 
-# Команда для отметки предметов как выданных (с логированием)
+# Команда для отметки предметов как выданных
 @bot.command(name='выдано')
 async def mark_delivered(ctx, member: discord.Member = None):
     if not is_admin(ctx.author.id):
@@ -376,7 +473,6 @@ async def mark_delivered(ctx, member: discord.Member = None):
             if count > 0:
                 save_data(data)
                 
-                # Лог для админов
                 log_embed = discord.Embed(
                     title="📦 ПРЕДМЕТЫ ВЫДАНЫ",
                     description=f"**Администратор:** {ctx.author.name}\n"
@@ -388,10 +484,9 @@ async def mark_delivered(ctx, member: discord.Member = None):
                 log_embed.add_field(name="Предметы", value="\n".join(items_list)[:1024])
                 log_embed.set_footer(text="by Ilya Vetrov")
                 
-                # Отправляем лог всем админам
                 for admin_id in ADMIN_IDS:
                     admin = await bot.fetch_user(admin_id)
-                    if admin and admin_id != ctx.author.id:  # Не дублировать тому кто выдал
+                    if admin and admin_id != ctx.author.id:
                         try:
                             await admin.send(embed=log_embed)
                         except:
@@ -403,7 +498,6 @@ async def mark_delivered(ctx, member: discord.Member = None):
     else:
         total = 0
         total_price_all = 0
-        by_admin = {}
         
         for user_id, user_data in data.items():
             for item in user_data.get("pending_items", []):
@@ -432,7 +526,6 @@ async def mark_delivered(ctx, member: discord.Member = None):
             )
             log_embed.set_footer(text="by Ilya Vetrov")
             
-            # Отправляем лог всем админам
             for admin_id in ADMIN_IDS:
                 admin = await bot.fetch_user(admin_id)
                 if admin and admin_id != ctx.author.id:
@@ -467,7 +560,6 @@ async def purchase_history(ctx, member: discord.Member = None):
         color=discord.Color.purple()
     )
     
-    # Общая статистика
     total_spent = sum(p.get("price", 0) for p in data[user_id]["all_purchases"])
     total_items = len(data[user_id]["all_purchases"])
     pending = len([p for p in data[user_id].get("pending_items", []) if not p.get("delivered", False)])
@@ -476,7 +568,6 @@ async def purchase_history(ctx, member: discord.Member = None):
     embed.add_field(name="Всего покупок", value=total_items, inline=True)
     embed.add_field(name="Ожидают выдачи", value=pending, inline=True)
     
-    # Последние 10 покупок
     recent = data[user_id]["all_purchases"][-10:]
     recent_list = ""
     for p in recent:
@@ -488,7 +579,7 @@ async def purchase_history(ctx, member: discord.Member = None):
     
     await ctx.send(embed=embed)
 
-# Команда для выдачи валюты (с логированием)
+# Команда для выдачи валюты
 @bot.command(name='датьмонет')
 async def give_money(ctx, member: discord.Member = None, amount: int = None):
     if not is_admin(ctx.author.id):
@@ -531,7 +622,6 @@ async def give_money(ctx, member: discord.Member = None, amount: int = None):
     )
     embed.set_footer(text="by Ilya Vetrov")
     
-    # Уведомление всем админам
     for admin_id in ADMIN_IDS:
         admin = await bot.fetch_user(admin_id)
         if admin and admin_id != ctx.author.id:
@@ -598,7 +688,7 @@ async def inventory(ctx, member: discord.Member = None):
     )
     
     inventory_list = ""
-    for i, item in enumerate(data[user_id]["inventory"][-20:], 1):  # Последние 20
+    for i, item in enumerate(data[user_id]["inventory"][-20:], 1):
         received_by = item.get("received_by", "админ")
         inventory_list += f"{i}. {item['name']} (выдал: {received_by}, {item.get('received_date', 'неизвестно')})\n"
     
@@ -631,7 +721,7 @@ async def list_admins(ctx):
     embed.set_footer(text="by Ilya Vetrov")
     await ctx.send(embed=embed)
 
-# Команда для просмотра статистики (только для админов)
+# Команда для просмотра статистики
 @bot.command(name='статистика')
 async def shop_stats(ctx):
     if not is_admin(ctx.author.id):
@@ -669,7 +759,7 @@ async def on_ready():
     print(f'✅ Бот {bot.user} готов к работе!')
     print(f'📁 Папка: /app')
     print(f'👑 Администраторов: {len(ADMIN_IDS)}')
-    await bot.change_presence(activity=discord.Game(name="!магазин | !невыдано"))
+    await bot.change_presence(activity=discord.Game(name="!команды | !магазин"))
 
 # Запуск бота с токеном из переменной окружения
 token = os.getenv('TOKEN')
