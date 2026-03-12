@@ -41,24 +41,28 @@ def is_admin(user_id):
     return user_id in ADMIN_IDS
 
 def is_allowed_channel(channel_id, command_type):
-    # Админский канал - всё можно
     if channel_id == ADMIN_CHANNEL_ID:
         return True
-    
-    # Для команды баланс - только канал баланса
     if command_type == 'balance':
         return channel_id == BALANCE_CHANNEL_ID
-    
-    # Для всех остальных команд - магазинный канал
     return channel_id == SHOP_CHANNEL_ID
 
-# Модальное окно для ввода ника и CID
-class NicknameModal(Modal, title="Введите игровые данные"):
+# Модальное окно для выбора количества
+class QuantityModal(Modal, title="Выберите количество"):
     def __init__(self, item_name, item_price, shop_view):
         super().__init__()
         self.item_name = item_name
         self.item_price = item_price
         self.shop_view = shop_view
+        
+        self.quantity = TextInput(
+            label="Количество",
+            placeholder="Введите количество (1-99)",
+            required=True,
+            max_length=2,
+            min_length=1
+        )
+        self.add_item(self.quantity)
         
         self.nickname = TextInput(
             label="Игровой Никнейм",
@@ -77,13 +81,105 @@ class NicknameModal(Modal, title="Введите игровые данные"):
         self.add_item(self.cid)
     
     async def on_submit(self, interaction: discord.Interaction):
+        try:
+            quantity = int(self.quantity.value)
+            if quantity < 1 or quantity > 99:
+                await interaction.response.send_message("❌ Количество должно быть от 1 до 99!", ephemeral=True)
+                return
+        except:
+            await interaction.response.send_message("❌ Введите число!", ephemeral=True)
+            return
+        
         await self.shop_view.process_purchase(
             interaction, 
             self.item_name, 
             self.item_price,
+            quantity,
             self.nickname.value,
             self.cid.value
         )
+
+# Кнопки для выдачи (для админского канала)
+class DeliveryView(View):
+    def __init__(self, purchase_id, user_id, item_name, quantity, nickname, cid):
+        super().__init__(timeout=None)
+        self.purchase_id = purchase_id
+        self.user_id = user_id
+        self.item_name = item_name
+        self.quantity = quantity
+        self.nickname = nickname
+        self.cid = cid
+        
+    @discord.ui.button(label="✅ Выдать", style=discord.ButtonStyle.green, emoji="✅")
+    async def deliver_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_admin(interaction.user.id):
+            await interaction.response.send_message("❌ Только администраторы!", ephemeral=True)
+            return
+        
+        data = load_data()
+        user_id = str(self.user_id)
+        
+        if user_id in data:
+            # Отмечаем предмет как выданный
+            for item in data[user_id].get("pending_items", []):
+                if (item.get("name") == self.item_name and 
+                    item.get("nickname") == self.nickname and 
+                    not item.get("delivered")):
+                    item["delivered"] = True
+                    
+                    # Добавляем в инвентарь
+                    if "inventory" not in data[user_id]:
+                        data[user_id]["inventory"] = []
+                    
+                    # Добавляем каждый предмет отдельно
+                    for i in range(self.quantity):
+                        data[user_id]["inventory"].append({
+                            "name": self.item_name,
+                            "received_date": datetime.now().strftime("%d.%m.%Y %H:%M"),
+                            "received_by": interaction.user.name,
+                            "nickname": self.nickname,
+                            "cid": self.cid
+                        })
+                    break
+            
+            save_data(data)
+            
+            # Отправляем уведомление пользователю
+            try:
+                user = await bot.fetch_user(int(user_id))
+                if user:
+                    embed = discord.Embed(
+                        title="✅ Товар выдан!",
+                        description=f"Вам выдан товар: **{self.item_name}** x{self.quantity}",
+                        color=discord.Color.green()
+                    )
+                    embed.add_field(name="Выдал", value=interaction.user.name)
+                    embed.add_field(name="Дата", value=datetime.now().strftime("%d.%m.%Y %H:%M"))
+                    embed.set_footer(text="by Ilya Vetrov")
+                    await user.send(embed=embed)
+            except:
+                pass
+            
+            # Обновляем сообщение
+            embed = interaction.message.embeds[0]
+            embed.color = discord.Color.green()
+            embed.add_field(name="Статус", value="✅ ВЫДАНО", inline=False)
+            
+            await interaction.message.edit(embed=embed, view=None)
+            await interaction.response.send_message("✅ Товар отмечен как выданный!", ephemeral=True)
+    
+    @discord.ui.button(label="❌ Не выдавать", style=discord.ButtonStyle.red, emoji="❌")
+    async def not_deliver_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_admin(interaction.user.id):
+            await interaction.response.send_message("❌ Только администраторы!", ephemeral=True)
+            return
+        
+        embed = interaction.message.embeds[0]
+        embed.color = discord.Color.red()
+        embed.add_field(name="Статус", value="❌ ОТКАЗАНО", inline=False)
+        
+        await interaction.message.edit(embed=embed, view=None)
+        await interaction.response.send_message("❌ Товар отмечен как отказанный", ephemeral=True)
 
 # Класс магазина
 class ShopView(View):
@@ -154,17 +250,18 @@ class ShopView(View):
         
         if balance < item["price"]:
             await interaction.response.send_message(
-                f"❌ Недостаточно средств!\nНужно: {item['price']} монет\nУ вас: {balance} монет",
+                f"❌ Недостаточно средств!\nНужно хотя бы: {item['price']} монет\nУ вас: {balance} монет",
                 ephemeral=True
             )
             return
         
-        modal = NicknameModal(item["name"], item["price"], self)
+        modal = QuantityModal(item["name"], item["price"], self)
         await interaction.response.send_modal(modal)
     
-    async def process_purchase(self, interaction: discord.Interaction, name, price, nickname, cid):
+    async def process_purchase(self, interaction: discord.Interaction, name, price, quantity, nickname, cid):
         data = load_data()
         user_id = str(interaction.user.id)
+        total_price = price * quantity
         
         if user_id not in data:
             data[user_id] = {
@@ -175,16 +272,24 @@ class ShopView(View):
                 "name": interaction.user.name
             }
         
-        if data[user_id]["balance"] < price:
-            await interaction.response.send_message("❌ Ошибка: недостаточно средств!", ephemeral=True)
+        if data[user_id]["balance"] < total_price:
+            await interaction.response.send_message(
+                f"❌ Недостаточно средств!\nНужно: {total_price} монет\nУ вас: {data[user_id]['balance']} монет",
+                ephemeral=True
+            )
             return
         
         # Списываем деньги
-        data[user_id]["balance"] -= price
+        data[user_id]["balance"] -= total_price
+        
+        purchase_id = f"{user_id}_{datetime.now().timestamp()}"
         
         purchase = {
+            "id": purchase_id,
             "name": name,
             "price": price,
+            "quantity": quantity,
+            "total": total_price,
             "date": datetime.now().strftime("%d.%m.%Y %H:%M"),
             "nickname": nickname,
             "cid": cid,
@@ -199,29 +304,34 @@ class ShopView(View):
         # Ответ пользователю
         embed = discord.Embed(title="✅ ПОКУПКА СОВЕРШЕНА!", color=discord.Color.green())
         embed.add_field(name="Товар", value=name, inline=True)
-        embed.add_field(name="Цена", value=f"{price} монет", inline=True)
+        embed.add_field(name="Цена за шт", value=f"{price} монет", inline=True)
+        embed.add_field(name="Количество", value=f"{quantity} шт.", inline=True)
+        embed.add_field(name="Всего", value=f"{total_price} монет", inline=True)
         embed.add_field(name="Остаток", value=f"{data[user_id]['balance']} монет", inline=True)
+        embed.add_field(name="Статус", value="⏳ Ожидает выдачи", inline=True)
         embed.add_field(name="Никнейм", value=nickname, inline=True)
         embed.add_field(name="CID", value=cid, inline=True)
-        embed.add_field(name="Статус", value="⏳ Ожидает выдачи", inline=True)
         embed.set_footer(text="by Ilya Vetrov")
         
         await interaction.response.send_message(embed=embed, ephemeral=True)
         
-        # Уведомление в админский канал
+        # Уведомление в админский канал с КНОПКАМИ
         admin_channel = bot.get_channel(ADMIN_CHANNEL_ID)
         if admin_channel:
             admin_embed = discord.Embed(title="🛒 НОВАЯ ПОКУПКА!", color=discord.Color.blue())
-            admin_embed.add_field(name="Покупатель", value=f"{interaction.user.name} ({interaction.user.id})", inline=False)
+            admin_embed.add_field(name="Покупатель", value=f"{interaction.user.name} (`{interaction.user.id}`)", inline=False)
             admin_embed.add_field(name="Товар", value=name, inline=True)
-            admin_embed.add_field(name="Цена", value=f"{price} монет", inline=True)
+            admin_embed.add_field(name="Цена за шт", value=f"{price} монет", inline=True)
+            admin_embed.add_field(name="Количество", value=f"{quantity} шт.", inline=True)
+            admin_embed.add_field(name="Всего", value=f"{total_price} монет", inline=True)
             admin_embed.add_field(name="Никнейм", value=nickname, inline=True)
             admin_embed.add_field(name="CID", value=cid, inline=True)
             admin_embed.add_field(name="Канал", value=f"#{interaction.channel.name}", inline=True)
             admin_embed.add_field(name="Время", value=datetime.now().strftime("%H:%M %d.%m.%Y"), inline=False)
             admin_embed.set_footer(text="by Ilya Vetrov")
             
-            await admin_channel.send(embed=admin_embed)
+            view = DeliveryView(purchase_id, interaction.user.id, name, quantity, nickname, cid)
+            await admin_channel.send(embed=admin_embed, view=view)
     
     async def balance_callback(self, interaction: discord.Interaction):
         if not is_allowed_channel(interaction.channel_id, 'balance'):
@@ -253,30 +363,30 @@ async def shop_command(ctx):
     embed = discord.Embed(
         title="🛒 МАГАЗИН",
         description="**Глава 1: Расходники**\n"
-                   "💊 Реанимнабор — 150 монет\n"
-                   "💉 Набор для самореанимации — 200 монет\n"
-                   "🛡️ Ремкоплект для брони — 100 монет\n"
-                   "🔫 MG Ammo — 50 монет\n"
-                   "🎯 Sniper Ammo — 75 монет\n\n"
+                   "💊 Реанимнабор — 150 монет/шт\n"
+                   "💉 Набор для самореанимации — 200 монет/шт\n"
+                   "🛡️ Ремкоплект для брони — 100 монет/шт\n"
+                   "🔫 MG Ammo — 50 монет/шт\n"
+                   "🎯 Sniper Ammo — 75 монет/шт\n\n"
                    
                    "**Глава 2: Модули**\n"
-                   "🔇 Глушитель — 300 монет\n"
-                   "📦 Увеличенный магазин (винтовка) — 250 монет\n"
-                   "📦 Увеличенный магазин (пистолет) — 200 монет\n"
-                   "📦 Увеличенный магазин (ПП) — 225 монет\n"
-                   "📦 Увеличенный магазин (снайперская винтовка) — 275 монет\n"
-                   "🥁 Барабанный магазин (винтовка) — 400 монет\n\n"
+                   "🔇 Глушитель — 300 монет/шт\n"
+                   "📦 Увеличенный магазин (винтовка) — 250 монет/шт\n"
+                   "📦 Увеличенный магазин (пистолет) — 200 монет/шт\n"
+                   "📦 Увеличенный магазин (ПП) — 225 монет/шт\n"
+                   "📦 Увеличенный магазин (снайперская винтовка) — 275 монет/шт\n"
+                   "🥁 Барабанный магазин (винтовка) — 400 монет/шт\n\n"
                    
                    "**Глава 3: Спец. вооружение**\n"
-                   "🔫 Тяжелый пулемет — 800 монет\n"
-                   "⚡ Тяжелый пулемет MK2 — 1200 монет\n"
-                   "🎯 Тяжелая снайперская — 1000 монет\n"
-                   "⭐ Тяжелая снайперская MK2 — 1500 монет\n"
-                   "🔫 Штурмовой дробовик — 600 монет\n"
-                   "🔫 Тяжелый револьвер MK2 — 700 монет",
+                   "🔫 Тяжелый пулемет — 800 монет/шт\n"
+                   "⚡ Тяжелый пулемет MK2 — 1200 монет/шт\n"
+                   "🎯 Тяжелая снайперская — 1000 монет/шт\n"
+                   "⭐ Тяжелая снайперская MK2 — 1500 монет/шт\n"
+                   "🔫 Штурмовой дробовик — 600 монет/шт\n"
+                   "🔫 Тяжелый револьвер MK2 — 700 монет/шт",
         color=discord.Color.gold()
     )
-    embed.add_field(name="ℹ Информация", value="При покупке нужно указать Игровой Никнейм и CID\nТовары выдаются в конце недели", inline=False)
+    embed.add_field(name="ℹ Информация", value="✅ Можно выбрать количество\n✅ При покупке укажите ник и CID\n✅ Товары выдаются в конце недели", inline=False)
     embed.set_footer(text="by Ilya Vetrov")
     
     await ctx.send(embed=embed, view=view)
@@ -323,7 +433,7 @@ async def inventory_command(ctx, member: discord.Member = None):
     embed = discord.Embed(title=f"📦 ИНВЕНТАРЬ: {member.name}", color=discord.Color.purple())
     
     items = []
-    for item in data[user_id]["inventory"][-15:]:
+    for item in data[user_id]["inventory"][-20:]:
         items.append(f"• {item['name']} (выдано: {item.get('received_date', '?')})")
     
     embed.add_field(name="Полученные предметы", value="\n".join(items) or "Нет предметов", inline=False)
@@ -358,15 +468,19 @@ async def history_command(ctx, member: discord.Member = None):
     
     embed = discord.Embed(title=f"📜 ИСТОРИЯ ПОКУПОК: {member.name}", color=discord.Color.purple())
     
-    total = sum(p.get("price", 0) for p in data[user_id]["all_purchases"])
+    total = sum(p.get("total", p.get("price", 0)) for p in data[user_id]["all_purchases"])
+    total_items = sum(p.get("quantity", 1) for p in data[user_id]["all_purchases"])
+    
     embed.add_field(name="Всего потрачено", value=f"{total} монет", inline=True)
-    embed.add_field(name="Всего покупок", value=len(data[user_id]["all_purchases"]), inline=True)
+    embed.add_field(name="Всего предметов", value=total_items, inline=True)
+    embed.add_field(name="Покупок", value=len(data[user_id]["all_purchases"]), inline=True)
     
     recent = data[user_id]["all_purchases"][-10:]
     items = []
     for p in recent:
         status = "✅" if p.get("delivered") else "⏳"
-        items.append(f"{status} {p['name']} - {p['price']}💎 ({p['date']})")
+        qty = p.get("quantity", 1)
+        items.append(f"{status} {p['name']} x{qty} - {p.get('total', p['price'])}💎 ({p['date']})")
     
     embed.add_field(name="Последние покупки", value="\n".join(items) or "Нет", inline=False)
     embed.set_footer(text="by Ilya Vetrov")
@@ -470,15 +584,18 @@ async def pending_command(ctx):
                 except:
                     username = user_data.get("name", "?")
                 
+                qty = item.get("quantity", 1)
                 pending_list.append({
                     "user": username,
                     "item": item["name"],
                     "price": item["price"],
+                    "quantity": qty,
+                    "total": item.get("total", item["price"] * qty),
                     "nickname": item.get("nickname", "?"),
                     "cid": item.get("cid", "?"),
                     "date": item.get("date", "?")
                 })
-                total_value += item["price"]
+                total_value += item.get("total", item["price"] * qty)
     
     if not pending_list:
         await ctx.send("📦 Нет предметов к выдаче!")
@@ -486,14 +603,14 @@ async def pending_command(ctx):
     
     embed = discord.Embed(
         title="📋 ПРЕДМЕТЫ К ВЫДАЧЕ",
-        description=f"Всего: **{len(pending_list)}** предметов на **{total_value}** монет",
+        description=f"Всего: **{len(pending_list)}** позиций на **{total_value}** монет",
         color=discord.Color.orange()
     )
     
     for p in pending_list[:10]:
         embed.add_field(
-            name=f"{p['user']} - {p['item']}",
-            value=f"💰 {p['price']} | Ник: {p['nickname']} | CID: {p['cid']} | {p['date']}",
+            name=f"{p['user']} - {p['item']} x{p['quantity']}",
+            value=f"💰 {p['total']} | Ник: {p['nickname']} | CID: {p['cid']} | {p['date']}",
             inline=False
         )
     
@@ -518,16 +635,21 @@ async def deliver_command(ctx, member: discord.Member = None):
             for item in data[user_id].get("pending_items", []):
                 if not item.get("delivered"):
                     item["delivered"] = True
-                    count += 1
-                    items.append(item["name"])
+                    count += item.get("quantity", 1)
+                    items.append(f"{item['name']} x{item.get('quantity', 1)}")
                     
                     if "inventory" not in data[user_id]:
                         data[user_id]["inventory"] = []
-                    data[user_id]["inventory"].append({
-                        "name": item["name"],
-                        "received_date": datetime.now().strftime("%d.%m.%Y %H:%M"),
-                        "received_by": ctx.author.name
-                    })
+                    
+                    # Добавляем каждый предмет отдельно
+                    for i in range(item.get("quantity", 1)):
+                        data[user_id]["inventory"].append({
+                            "name": item["name"],
+                            "received_date": datetime.now().strftime("%d.%m.%Y %H:%M"),
+                            "received_by": ctx.author.name,
+                            "nickname": item.get("nickname", "?"),
+                            "cid": item.get("cid", "?")
+                        })
             
             if count > 0:
                 save_data(data)
@@ -540,15 +662,19 @@ async def deliver_command(ctx, member: discord.Member = None):
             for item in user_data.get("pending_items", []):
                 if not item.get("delivered"):
                     item["delivered"] = True
-                    total += 1
+                    total += item.get("quantity", 1)
                     
                     if "inventory" not in user_data:
                         user_data["inventory"] = []
-                    user_data["inventory"].append({
-                        "name": item["name"],
-                        "received_date": datetime.now().strftime("%d.%m.%Y %H:%M"),
-                        "received_by": ctx.author.name
-                    })
+                    
+                    for i in range(item.get("quantity", 1)):
+                        user_data["inventory"].append({
+                            "name": item["name"],
+                            "received_date": datetime.now().strftime("%d.%m.%Y %H:%M"),
+                            "received_by": ctx.author.name,
+                            "nickname": item.get("nickname", "?"),
+                            "cid": item.get("cid", "?")
+                        })
         
         if total > 0:
             save_data(data)
@@ -571,13 +697,13 @@ async def stats_command(ctx):
     spent = 0
     
     for user_data in data.values():
-        pending += len([x for x in user_data.get("pending_items", []) if not x.get("delivered")])
+        pending += sum(item.get("quantity", 1) for item in user_data.get("pending_items", []) if not item.get("delivered"))
         delivered += len(user_data.get("inventory", []))
-        spent += sum(p.get("price", 0) for p in user_data.get("all_purchases", []))
+        spent += sum(p.get("total", p.get("price", 0)) for p in user_data.get("all_purchases", []))
     
     embed = discord.Embed(title="📊 СТАТИСТИКА МАГАЗИНА", color=discord.Color.blue())
     embed.add_field(name="Пользователей", value=users, inline=True)
-    embed.add_field(name="Всего покупок", value=pending + delivered, inline=True)
+    embed.add_field(name="Всего предметов", value=pending + delivered, inline=True)
     embed.add_field(name="Ожидают выдачи", value=pending, inline=True)
     embed.add_field(name="Уже выдано", value=delivered, inline=True)
     embed.add_field(name="Всего потрачено", value=f"{spent} монет", inline=True)
