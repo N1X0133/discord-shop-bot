@@ -11,13 +11,14 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 
+# ИСПРАВЛЕНО: Убираем лишний CommandTree
 class ShopBot(commands.Bot):
     def __init__(self):
         super().__init__(command_prefix='!', intents=intents)
-        self.tree = app_commands.CommandTree(self)
+        # НЕ создаем tree заново - он уже есть в bot.tree!
     
     async def setup_hook(self):
-        await self.tree.sync()
+        await self.tree.sync()  # Используем существующий tree
         print(f"✅ Слэш-команды синхронизированы")
 
 bot = ShopBot()
@@ -808,6 +809,20 @@ async def admins_command(ctx):
     embed.set_footer(text="by Ilya Vetrov")
     
     await ctx.send(embed=embed)
+
+# ВРЕМЕННАЯ КОМАНДА ДЛЯ СИНХРОНИЗАЦИИ (потом можно удалить)
+@bot.command(name='sync')
+async def sync_commands(ctx):
+    """Синхронизировать слэш-команды (только для админов)"""
+    if not is_admin(ctx.author.id):
+        await ctx.send("❌ Только администраторы!")
+        return
+    
+    try:
+        await bot.tree.sync()
+        await ctx.send("✅ Слэш-команды синхронизированы!")
+    except Exception as e:
+        await ctx.send(f"❌ Ошибка: {e}")
 
 # ==================== ЗАПУСК ====================
 
