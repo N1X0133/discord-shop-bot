@@ -1,5 +1,6 @@
 import discord
 from discord.ext import commands
+from discord import app_commands
 from discord.ui import Select, View, Button, Modal, TextInput
 import json
 import os
@@ -10,7 +11,16 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 
-bot = commands.Bot(command_prefix='!', intents=intents)
+class ShopBot(commands.Bot):
+    def __init__(self):
+        super().__init__(command_prefix='!', intents=intents)
+        self.tree = app_commands.CommandTree(self)
+    
+    async def setup_hook(self):
+        await self.tree.sync()
+        print(f"✅ Слэш-команды синхронизированы")
+
+bot = ShopBot()
 
 # Файл для хранения данных
 DATA_FILE = 'user_data.json'
@@ -23,7 +33,7 @@ ADMIN_IDS = [
 ]
 
 # ID каналов
-BALANCE_CHANNEL_ID = 1481753586835783861   # Только !баланс
+BALANCE_CHANNEL_ID = 1481753586835783861   # Только /balance
 SHOP_CHANNEL_ID = 1481753891124019302      # Магазин и всё остальное
 ADMIN_CHANNEL_ID = 1481754087614841033     # Админский канал
 
@@ -47,28 +57,31 @@ def is_allowed_channel(channel_id, command_type):
         return channel_id == BALANCE_CHANNEL_ID
     return channel_id == SHOP_CHANNEL_ID
 
-# Модальное окно для выбора количества
-class QuantityModal(Modal, title="Выберите количество"):
-    def __init__(self, item_name, item_price, shop_view):
+# Модальное окно для ввода данных
+class QuantityModal(Modal, title="Покупка товара"):
+    def __init__(self, item_name, item_price, shop_view, interaction):
         super().__init__()
         self.item_name = item_name
         self.item_price = item_price
         self.shop_view = shop_view
+        self.original_interaction = interaction
         
         self.quantity = TextInput(
             label="Количество",
             placeholder="Введите количество (1-99)",
             required=True,
             max_length=2,
-            min_length=1
+            min_length=1,
+            style=discord.TextStyle.short
         )
         self.add_item(self.quantity)
         
         self.nickname = TextInput(
             label="Игровой Никнейм",
-            placeholder="Введите ваш никнейм...",
+            placeholder="Введите ваш игровой никнейм...",
             required=True,
-            max_length=50
+            max_length=50,
+            style=discord.TextStyle.short
         )
         self.add_item(self.nickname)
         
@@ -76,30 +89,64 @@ class QuantityModal(Modal, title="Выберите количество"):
             label="CID",
             placeholder="Введите ваш CID...",
             required=True,
-            max_length=20
+            max_length=20,
+            style=discord.TextStyle.short
         )
         self.add_item(self.cid)
     
     async def on_submit(self, interaction: discord.Interaction):
         try:
-            quantity = int(self.quantity.value)
-            if quantity < 1 or quantity > 99:
-                await interaction.response.send_message("❌ Количество должно быть от 1 до 99!", ephemeral=True)
+            # Проверяем количество
+            try:
+                quantity = int(self.quantity.value)
+                if quantity < 1 or quantity > 99:
+                    await interaction.response.send_message(
+                        "❌ Количество должно быть от 1 до 99!",
+                        ephemeral=True
+                    )
+                    return
+            except ValueError:
+                await interaction.response.send_message(
+                    "❌ Введите число!",
+                    ephemeral=True
+                )
                 return
-        except:
-            await interaction.response.send_message("❌ Введите число!", ephemeral=True)
-            return
-        
-        await self.shop_view.process_purchase(
-            interaction, 
-            self.item_name, 
-            self.item_price,
-            quantity,
-            self.nickname.value,
-            self.cid.value
+            
+            # Проверяем что поля не пустые
+            if not self.nickname.value or not self.cid.value:
+                await interaction.response.send_message(
+                    "❌ Никнейм и CID обязательны!",
+                    ephemeral=True
+                )
+                return
+            
+            # Отправляем подтверждение что форма принята
+            await interaction.response.defer(ephemeral=True)
+            
+            # Вызываем обработку покупки
+            await self.shop_view.process_purchase(
+                self.original_interaction,
+                self.item_name,
+                self.item_price,
+                quantity,
+                self.nickname.value,
+                self.cid.value
+            )
+        except Exception as e:
+            print(f"Ошибка в on_submit: {e}")
+            await interaction.response.send_message(
+                "❌ Произошла ошибка. Попробуйте позже.",
+                ephemeral=True
+            )
+    
+    async def on_error(self, interaction: discord.Interaction, error: Exception):
+        print(f"Ошибка в модальном окне: {error}")
+        await interaction.response.send_message(
+            "❌ Произошла ошибка. Пожалуйста, попробуйте еще раз.",
+            ephemeral=True
         )
 
-# Кнопки для выдачи (для админского канала)
+# Кнопки для выдачи
 class DeliveryView(View):
     def __init__(self, purchase_id, user_id, item_name, quantity, nickname, cid):
         super().__init__(timeout=None)
@@ -109,7 +156,7 @@ class DeliveryView(View):
         self.quantity = quantity
         self.nickname = nickname
         self.cid = cid
-        
+    
     @discord.ui.button(label="✅ Выдать", style=discord.ButtonStyle.green, emoji="✅")
     async def deliver_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not is_admin(interaction.user.id):
@@ -120,18 +167,15 @@ class DeliveryView(View):
         user_id = str(self.user_id)
         
         if user_id in data:
-            # Отмечаем предмет как выданный
             for item in data[user_id].get("pending_items", []):
                 if (item.get("name") == self.item_name and 
                     item.get("nickname") == self.nickname and 
                     not item.get("delivered")):
                     item["delivered"] = True
                     
-                    # Добавляем в инвентарь
                     if "inventory" not in data[user_id]:
                         data[user_id]["inventory"] = []
                     
-                    # Добавляем каждый предмет отдельно
                     for i in range(self.quantity):
                         data[user_id]["inventory"].append({
                             "name": self.item_name,
@@ -144,7 +188,6 @@ class DeliveryView(View):
             
             save_data(data)
             
-            # Отправляем уведомление пользователю
             try:
                 user = await bot.fetch_user(int(user_id))
                 if user:
@@ -160,7 +203,6 @@ class DeliveryView(View):
             except:
                 pass
             
-            # Обновляем сообщение
             embed = interaction.message.embeds[0]
             embed.color = discord.Color.green()
             embed.add_field(name="Статус", value="✅ ВЫДАНО", inline=False)
@@ -232,131 +274,156 @@ class ShopView(View):
         await interaction.response.send_message(f"✓ Вы выбрали: {self.selected_item}", ephemeral=True)
     
     async def buy_callback(self, interaction: discord.Interaction):
-        if not self.selected_item:
-            await interaction.response.send_message("❌ Сначала выберите товар!", ephemeral=True)
-            return
-        
-        if not is_allowed_channel(interaction.channel_id, 'shop'):
-            await interaction.response.send_message(f"❌ Покупки только в канале <#{SHOP_CHANNEL_ID}>", ephemeral=True)
-            return
-        
-        item = next((x for x in self.shop_items if x["name"] == self.selected_item), None)
-        if not item:
-            return
-        
-        data = load_data()
-        user_id = str(interaction.user.id)
-        balance = data.get(user_id, {}).get("balance", 0)
-        
-        if balance < item["price"]:
+        try:
+            if not self.selected_item:
+                await interaction.response.send_message("❌ Сначала выберите товар!", ephemeral=True)
+                return
+            
+            if not is_allowed_channel(interaction.channel_id, 'shop'):
+                await interaction.response.send_message(
+                    f"❌ Покупки только в канале <#{SHOP_CHANNEL_ID}>",
+                    ephemeral=True
+                )
+                return
+            
+            item = next((x for x in self.shop_items if x["name"] == self.selected_item), None)
+            if not item:
+                return
+            
+            data = load_data()
+            user_id = str(interaction.user.id)
+            balance = data.get(user_id, {}).get("balance", 0)
+            
+            if balance < item["price"]:
+                await interaction.response.send_message(
+                    f"❌ Недостаточно средств!\nНужно хотя бы: {item['price']} монет\nУ вас: {balance} монет",
+                    ephemeral=True
+                )
+                return
+            
+            modal = QuantityModal(item["name"], item["price"], self, interaction)
+            await interaction.response.send_modal(modal)
+            
+        except Exception as e:
+            print(f"Ошибка в buy_callback: {e}")
             await interaction.response.send_message(
-                f"❌ Недостаточно средств!\nНужно хотя бы: {item['price']} монет\nУ вас: {balance} монет",
+                "❌ Произошла ошибка. Попробуйте позже.",
                 ephemeral=True
             )
-            return
-        
-        modal = QuantityModal(item["name"], item["price"], self)
-        await interaction.response.send_modal(modal)
     
     async def process_purchase(self, interaction: discord.Interaction, name, price, quantity, nickname, cid):
-        data = load_data()
-        user_id = str(interaction.user.id)
-        total_price = price * quantity
-        
-        if user_id not in data:
-            data[user_id] = {
-                "balance": 0, 
-                "inventory": [], 
-                "pending_items": [], 
-                "all_purchases": [], 
-                "name": interaction.user.name
+        try:
+            data = load_data()
+            user_id = str(interaction.user.id)
+            total_price = price * quantity
+            
+            if user_id not in data:
+                data[user_id] = {
+                    "balance": 0,
+                    "inventory": [],
+                    "pending_items": [],
+                    "all_purchases": [],
+                    "name": interaction.user.name
+                }
+            
+            if data[user_id]["balance"] < total_price:
+                await interaction.followup.send(
+                    f"❌ Недостаточно средств!\nНужно: {total_price} монет\nУ вас: {data[user_id]['balance']} монет",
+                    ephemeral=True
+                )
+                return
+            
+            data[user_id]["balance"] -= total_price
+            
+            purchase = {
+                "name": name,
+                "price": price,
+                "quantity": quantity,
+                "total": total_price,
+                "date": datetime.now().strftime("%d.%m.%Y %H:%M"),
+                "nickname": nickname,
+                "cid": cid,
+                "delivered": False
             }
-        
-        if data[user_id]["balance"] < total_price:
-            await interaction.response.send_message(
-                f"❌ Недостаточно средств!\nНужно: {total_price} монет\nУ вас: {data[user_id]['balance']} монет",
+            
+            data[user_id]["pending_items"].append(purchase)
+            data[user_id]["all_purchases"].append(purchase.copy())
+            data[user_id]["name"] = interaction.user.name
+            save_data(data)
+            
+            embed = discord.Embed(title="✅ ПОКУПКА СОВЕРШЕНА!", color=discord.Color.green())
+            embed.add_field(name="Товар", value=name, inline=True)
+            embed.add_field(name="Цена/шт", value=f"{price} монет", inline=True)
+            embed.add_field(name="Количество", value=f"{quantity} шт.", inline=True)
+            embed.add_field(name="Всего", value=f"{total_price} монет", inline=True)
+            embed.add_field(name="Остаток", value=f"{data[user_id]['balance']} монет", inline=True)
+            embed.add_field(name="Никнейм", value=nickname, inline=True)
+            embed.add_field(name="CID", value=cid, inline=True)
+            embed.set_footer(text="by Ilya Vetrov")
+            
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            
+            # Уведомление админам
+            try:
+                admin_channel = bot.get_channel(ADMIN_CHANNEL_ID)
+                if admin_channel:
+                    admin_embed = discord.Embed(title="🛒 НОВАЯ ПОКУПКА!", color=discord.Color.blue())
+                    admin_embed.add_field(name="Покупатель", value=f"{interaction.user.name} (`{interaction.user.id}`)", inline=False)
+                    admin_embed.add_field(name="Товар", value=name, inline=True)
+                    admin_embed.add_field(name="Количество", value=f"{quantity} шт.", inline=True)
+                    admin_embed.add_field(name="Цена", value=f"{total_price} монет", inline=True)
+                    admin_embed.add_field(name="Никнейм", value=nickname, inline=True)
+                    admin_embed.add_field(name="CID", value=cid, inline=True)
+                    admin_embed.set_footer(text="by Ilya Vetrov")
+                    
+                    await admin_channel.send(embed=admin_embed)
+            except Exception as e:
+                print(f"Ошибка отправки админам: {e}")
+                
+        except Exception as e:
+            print(f"Критическая ошибка в process_purchase: {e}")
+            await interaction.followup.send(
+                "❌ Произошла ошибка при обработке покупки. Администраторы уже уведомлены.",
                 ephemeral=True
             )
-            return
-        
-        # Списываем деньги
-        data[user_id]["balance"] -= total_price
-        
-        purchase_id = f"{user_id}_{datetime.now().timestamp()}"
-        
-        purchase = {
-            "id": purchase_id,
-            "name": name,
-            "price": price,
-            "quantity": quantity,
-            "total": total_price,
-            "date": datetime.now().strftime("%d.%m.%Y %H:%M"),
-            "nickname": nickname,
-            "cid": cid,
-            "delivered": False
-        }
-        
-        data[user_id]["pending_items"].append(purchase)
-        data[user_id]["all_purchases"].append(purchase.copy())
-        data[user_id]["name"] = interaction.user.name
-        save_data(data)
-        
-        # Ответ пользователю
-        embed = discord.Embed(title="✅ ПОКУПКА СОВЕРШЕНА!", color=discord.Color.green())
-        embed.add_field(name="Товар", value=name, inline=True)
-        embed.add_field(name="Цена за шт", value=f"{price} монет", inline=True)
-        embed.add_field(name="Количество", value=f"{quantity} шт.", inline=True)
-        embed.add_field(name="Всего", value=f"{total_price} монет", inline=True)
-        embed.add_field(name="Остаток", value=f"{data[user_id]['balance']} монет", inline=True)
-        embed.add_field(name="Статус", value="⏳ Ожидает выдачи", inline=True)
-        embed.add_field(name="Никнейм", value=nickname, inline=True)
-        embed.add_field(name="CID", value=cid, inline=True)
-        embed.set_footer(text="by Ilya Vetrov")
-        
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-        
-        # Уведомление в админский канал с КНОПКАМИ
-        admin_channel = bot.get_channel(ADMIN_CHANNEL_ID)
-        if admin_channel:
-            admin_embed = discord.Embed(title="🛒 НОВАЯ ПОКУПКА!", color=discord.Color.blue())
-            admin_embed.add_field(name="Покупатель", value=f"{interaction.user.name} (`{interaction.user.id}`)", inline=False)
-            admin_embed.add_field(name="Товар", value=name, inline=True)
-            admin_embed.add_field(name="Цена за шт", value=f"{price} монет", inline=True)
-            admin_embed.add_field(name="Количество", value=f"{quantity} шт.", inline=True)
-            admin_embed.add_field(name="Всего", value=f"{total_price} монет", inline=True)
-            admin_embed.add_field(name="Никнейм", value=nickname, inline=True)
-            admin_embed.add_field(name="CID", value=cid, inline=True)
-            admin_embed.add_field(name="Канал", value=f"#{interaction.channel.name}", inline=True)
-            admin_embed.add_field(name="Время", value=datetime.now().strftime("%H:%M %d.%m.%Y"), inline=False)
-            admin_embed.set_footer(text="by Ilya Vetrov")
-            
-            view = DeliveryView(purchase_id, interaction.user.id, name, quantity, nickname, cid)
-            await admin_channel.send(embed=admin_embed, view=view)
     
     async def balance_callback(self, interaction: discord.Interaction):
-        if not is_allowed_channel(interaction.channel_id, 'balance'):
-            await interaction.response.send_message(f"❌ Баланс только в канале <#{BALANCE_CHANNEL_ID}>", ephemeral=True)
-            return
-        
-        data = load_data()
-        user_id = str(interaction.user.id)
-        balance = data.get(user_id, {}).get("balance", 0)
-        pending = len([x for x in data.get(user_id, {}).get("pending_items", []) if not x.get("delivered")])
-        
-        embed = discord.Embed(title="💰 ВАШ БАЛАНС", color=discord.Color.blue())
-        embed.add_field(name="Монеты", value=f"{balance} монет", inline=True)
-        embed.add_field(name="Ожидают выдачи", value=f"{pending} шт.", inline=True)
-        embed.set_footer(text="by Ilya Vetrov")
-        
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        try:
+            if not is_allowed_channel(interaction.channel_id, 'balance'):
+                await interaction.response.send_message(
+                    f"❌ Баланс только в канале <#{BALANCE_CHANNEL_ID}>",
+                    ephemeral=True
+                )
+                return
+            
+            data = load_data()
+            user_id = str(interaction.user.id)
+            balance = data.get(user_id, {}).get("balance", 0)
+            pending = len([x for x in data.get(user_id, {}).get("pending_items", []) if not x.get("delivered")])
+            
+            embed = discord.Embed(title="💰 ВАШ БАЛАНС", color=discord.Color.blue())
+            embed.add_field(name="Монеты", value=f"{balance} монет", inline=True)
+            embed.add_field(name="Ожидают выдачи", value=f"{pending} шт.", inline=True)
+            embed.set_footer(text="by Ilya Vetrov")
+            
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            
+        except Exception as e:
+            print(f"Ошибка в balance_callback: {e}")
+            await interaction.response.send_message(
+                "❌ Произошла ошибка. Попробуйте позже.",
+                ephemeral=True
+            )
 
-# ==================== КОМАНДЫ ====================
+# ==================== СЛЭШ-КОМАНДЫ ====================
 
-@bot.command(name='магазин')
-async def shop_command(ctx):
-    """Открыть магазин"""
-    if not is_allowed_channel(ctx.channel.id, 'shop'):
-        await ctx.send(f"❌ Магазин доступен только в канале <#{SHOP_CHANNEL_ID}>")
+@bot.tree.command(name="магазин", description="🛒 Открыть магазин и купить предметы")
+async def slash_shop(interaction: discord.Interaction):
+    if not is_allowed_channel(interaction.channel_id, 'shop'):
+        await interaction.response.send_message(
+            f"❌ Магазин доступен только в канале <#{SHOP_CHANNEL_ID}>",
+            ephemeral=True
+        )
         return
     
     view = ShopView()
@@ -386,19 +453,25 @@ async def shop_command(ctx):
                    "🔫 Тяжелый револьвер MK2 — 700 монет/шт",
         color=discord.Color.gold()
     )
-    embed.add_field(name="ℹ Информация", value="✅ Можно выбрать количество\n✅ При покупке укажите ник и CID\n✅ Товары выдаются в конце недели", inline=False)
+    embed.add_field(
+        name="ℹ Информация",
+        value="✅ Можно выбрать количество\n✅ При покупке укажите ник и CID\n✅ Товары выдаются в конце недели",
+        inline=False
+    )
     embed.set_footer(text="by Ilya Vetrov")
     
-    await ctx.send(embed=embed, view=view)
+    await interaction.response.send_message(embed=embed, view=view)
 
-@bot.command(name='баланс')
-async def balance_command(ctx, member: discord.Member = None):
-    """Проверить баланс"""
-    if not is_allowed_channel(ctx.channel.id, 'balance'):
-        await ctx.send(f"❌ Команда !баланс доступна только в канале <#{BALANCE_CHANNEL_ID}>")
+@bot.tree.command(name="баланс", description="💰 Проверить баланс")
+async def slash_balance(interaction: discord.Interaction, пользователь: discord.Member = None):
+    if not is_allowed_channel(interaction.channel_id, 'balance'):
+        await interaction.response.send_message(
+            f"❌ Команда /баланс доступна только в канале <#{BALANCE_CHANNEL_ID}>",
+            ephemeral=True
+        )
         return
     
-    member = member or ctx.author
+    member = пользователь or interaction.user
     data = load_data()
     user_id = str(member.id)
     
@@ -410,24 +483,30 @@ async def balance_command(ctx, member: discord.Member = None):
     embed.add_field(name="Ожидают выдачи", value=f"{pending} шт.", inline=True)
     embed.set_footer(text="by Ilya Vetrov")
     
-    await ctx.send(embed=embed)
+    await interaction.response.send_message(embed=embed)
 
-@bot.command(name='инвентарь')
-async def inventory_command(ctx, member: discord.Member = None):
-    """Посмотреть полученные предметы"""
-    if not is_allowed_channel(ctx.channel.id, 'shop'):
-        await ctx.send(f"❌ Команда !инвентарь доступна в канале <#{SHOP_CHANNEL_ID}>")
+@bot.tree.command(name="инвентарь", description="📦 Посмотреть полученные предметы")
+async def slash_inventory(interaction: discord.Interaction, пользователь: discord.Member = None):
+    if not is_allowed_channel(interaction.channel_id, 'shop'):
+        await interaction.response.send_message(
+            f"❌ Команда /инвентарь доступна в канале <#{SHOP_CHANNEL_ID}>",
+            ephemeral=True
+        )
         return
     
-    member = member or ctx.author
+    member = пользователь or interaction.user
     data = load_data()
     user_id = str(member.id)
     
     if user_id not in data or "inventory" not in data[user_id] or not data[user_id]["inventory"]:
-        embed = discord.Embed(title=f"📦 ИНВЕНТАРЬ: {member.name}", description="Инвентарь пуст!", color=discord.Color.light_grey())
+        embed = discord.Embed(
+            title=f"📦 ИНВЕНТАРЬ: {member.name}",
+            description="Инвентарь пуст!",
+            color=discord.Color.light_grey()
+        )
         embed.add_field(name="Баланс", value=f"{data.get(user_id, {}).get('balance', 0)} монет", inline=True)
         embed.set_footer(text="by Ilya Vetrov")
-        await ctx.send(embed=embed)
+        await interaction.response.send_message(embed=embed)
         return
     
     embed = discord.Embed(title=f"📦 ИНВЕНТАРЬ: {member.name}", color=discord.Color.purple())
@@ -444,26 +523,28 @@ async def inventory_command(ctx, member: discord.Member = None):
         embed.add_field(name="Ожидают выдачи", value=f"{pending} шт.", inline=True)
     
     embed.set_footer(text="by Ilya Vetrov")
-    await ctx.send(embed=embed)
+    await interaction.response.send_message(embed=embed)
 
-@bot.command(name='история')
-async def history_command(ctx, member: discord.Member = None):
-    """История покупок"""
-    if not is_allowed_channel(ctx.channel.id, 'shop'):
-        await ctx.send(f"❌ Команда !история доступна в канале <#{SHOP_CHANNEL_ID}>")
+@bot.tree.command(name="история", description="📜 История покупок")
+async def slash_history(interaction: discord.Interaction, пользователь: discord.Member = None):
+    if not is_allowed_channel(interaction.channel_id, 'shop'):
+        await interaction.response.send_message(
+            f"❌ Команда /история доступна в канале <#{SHOP_CHANNEL_ID}>",
+            ephemeral=True
+        )
         return
     
-    member = member or ctx.author
+    member = пользователь or interaction.user
     
-    if member != ctx.author and not is_admin(ctx.author.id):
-        await ctx.send("❌ Вы можете смотреть только свою историю!")
+    if member != interaction.user and not is_admin(interaction.user.id):
+        await interaction.response.send_message("❌ Вы можете смотреть только свою историю!", ephemeral=True)
         return
     
     data = load_data()
     user_id = str(member.id)
     
     if user_id not in data or "all_purchases" not in data[user_id] or not data[user_id]["all_purchases"]:
-        await ctx.send(f"📭 У пользователя {member.mention} нет истории покупок")
+        await interaction.response.send_message(f"📭 У пользователя {member.mention} нет истории покупок")
         return
     
     embed = discord.Embed(title=f"📜 ИСТОРИЯ ПОКУПОК: {member.name}", color=discord.Color.purple())
@@ -485,50 +566,56 @@ async def history_command(ctx, member: discord.Member = None):
     embed.add_field(name="Последние покупки", value="\n".join(items) or "Нет", inline=False)
     embed.set_footer(text="by Ilya Vetrov")
     
-    await ctx.send(embed=embed)
+    await interaction.response.send_message(embed=embed)
 
-@bot.command(name='каналы')
-async def channels_command(ctx):
-    """Информация о каналах"""
+@bot.tree.command(name="каналы", description="📢 Информация о каналах")
+async def slash_channels(interaction: discord.Interaction):
     embed = discord.Embed(title="📢 ДОСТУПНЫЕ КАНАЛЫ", color=discord.Color.blue())
-    embed.add_field(name="💰 Канал баланса", value=f"<#{BALANCE_CHANNEL_ID}>\nТолько !баланс", inline=False)
+    embed.add_field(name="💰 Канал баланса", value=f"<#{BALANCE_CHANNEL_ID}>\nТолько /баланс", inline=False)
     embed.add_field(name="🛒 Магазинный канал", value=f"<#{SHOP_CHANNEL_ID}>\nМагазин, покупки, инвентарь, история", inline=False)
     embed.add_field(name="👑 Админский канал", value=f"<#{ADMIN_CHANNEL_ID}>\nУведомления и все команды", inline=False)
     embed.set_footer(text="by Ilya Vetrov")
     
-    await ctx.send(embed=embed)
+    await interaction.response.send_message(embed=embed)
 
-@bot.command(name='команды')
-async def commands_command(ctx):
-    """Список команд"""
-    embed = discord.Embed(title="📋 ДОСТУПНЫЕ КОМАНДЫ", color=discord.Color.blue())
-    embed.add_field(name="!магазин", value="🛒 Открыть магазин", inline=False)
-    embed.add_field(name="!баланс", value="💰 Проверить баланс", inline=False)
-    embed.add_field(name="!баланс @пользователь", value="👤 Баланс другого", inline=False)
-    embed.add_field(name="!инвентарь", value="📦 Полученные предметы", inline=False)
-    embed.add_field(name="!история", value="📜 История покупок", inline=False)
-    embed.add_field(name="!каналы", value="📢 Информация о каналах", inline=False)
+@bot.tree.command(name="команды", description="📋 Список всех команд")
+async def slash_commands(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="📋 ДОСТУПНЫЕ КОМАНДЫ",
+        description="**Основные команды:**\n"
+                   "`/магазин` - 🛒 Открыть магазин\n"
+                   "`/баланс` - 💰 Проверить баланс\n"
+                   "`/баланс @пользователь` - 👤 Баланс другого\n"
+                   "`/инвентарь` - 📦 Полученные предметы\n"
+                   "`/история` - 📜 История покупок\n"
+                   "`/каналы` - 📢 Информация о каналах\n"
+                   "`/команды` - 📋 Этот список",
+        color=discord.Color.blue()
+    )
     embed.set_footer(text="by Ilya Vetrov")
     
-    await ctx.send(embed=embed)
+    await interaction.response.send_message(embed=embed)
     
-    if is_admin(ctx.author.id):
-        admin_embed = discord.Embed(title="👑 АДМИН КОМАНДЫ", color=discord.Color.gold())
-        admin_embed.add_field(name="!датьмонет @пользователь сумма", value="💰 Выдать монеты", inline=False)
-        admin_embed.add_field(name="!невыдано", value="📋 Показать ожидающие выдачи", inline=False)
-        admin_embed.add_field(name="!выдано @пользователь", value="✅ Выдать предметы пользователю", inline=False)
-        admin_embed.add_field(name="!выдано", value="✅ Выдать всё всем", inline=False)
-        admin_embed.add_field(name="!статистика", value="📊 Статистика магазина", inline=False)
-        admin_embed.add_field(name="!админы", value="👑 Список админов", inline=False)
+    if is_admin(interaction.user.id):
+        admin_embed = discord.Embed(
+            title="👑 АДМИН КОМАНДЫ",
+            description="**Команды только для администраторов:**\n"
+                       "`!датьмонет @пользователь сумма` - 💰 Выдать монеты\n"
+                       "`!невыдано` - 📋 Показать ожидающие выдачи\n"
+                       "`!выдано @пользователь` - ✅ Выдать предметы\n"
+                       "`!выдано` - ✅ Выдать всё всем\n"
+                       "`!статистика` - 📊 Статистика магазина\n"
+                       "`!админы` - 👑 Список админов",
+            color=discord.Color.gold()
+        )
         admin_embed.set_footer(text="by Ilya Vetrov")
         
-        await ctx.send(embed=admin_embed)
+        await interaction.followup.send(embed=admin_embed, ephemeral=True)
 
-# ==================== АДМИН КОМАНДЫ ====================
+# ==================== АДМИН КОМАНДЫ (с префиксом !) ====================
 
 @bot.command(name='датьмонет')
 async def give_money_command(ctx, member: discord.Member, amount: int):
-    """Выдать монеты пользователю"""
     if not is_admin(ctx.author.id):
         await ctx.send("❌ Только администраторы могут использовать эту команду!")
         return
@@ -566,7 +653,6 @@ async def give_money_command(ctx, member: discord.Member, amount: int):
 
 @bot.command(name='невыдано')
 async def pending_command(ctx):
-    """Показать предметы к выдаче"""
     if not is_admin(ctx.author.id):
         await ctx.send("❌ Только администраторы могут использовать эту команду!")
         return
@@ -619,7 +705,6 @@ async def pending_command(ctx):
 
 @bot.command(name='выдано')
 async def deliver_command(ctx, member: discord.Member = None):
-    """Отметить предметы как выданные"""
     if not is_admin(ctx.author.id):
         await ctx.send("❌ Только администраторы могут использовать эту команду!")
         return
@@ -641,7 +726,6 @@ async def deliver_command(ctx, member: discord.Member = None):
                     if "inventory" not in data[user_id]:
                         data[user_id]["inventory"] = []
                     
-                    # Добавляем каждый предмет отдельно
                     for i in range(item.get("quantity", 1)):
                         data[user_id]["inventory"].append({
                             "name": item["name"],
@@ -684,7 +768,6 @@ async def deliver_command(ctx, member: discord.Member = None):
 
 @bot.command(name='статистика')
 async def stats_command(ctx):
-    """Статистика магазина"""
     if not is_admin(ctx.author.id):
         await ctx.send("❌ Только администраторы могут использовать эту команду!")
         return
@@ -713,7 +796,6 @@ async def stats_command(ctx):
 
 @bot.command(name='админы')
 async def admins_command(ctx):
-    """Список администраторов"""
     admin_list = []
     for admin_id in ADMIN_IDS:
         try:
@@ -736,7 +818,7 @@ async def on_ready():
     print(f'💰 Канал баланса: {BALANCE_CHANNEL_ID}')
     print(f'🛒 Магазинный канал: {SHOP_CHANNEL_ID}')
     print(f'👑 Админский канал: {ADMIN_CHANNEL_ID}')
-    await bot.change_presence(activity=discord.Game(name="!команды | !магазин"))
+    await bot.change_presence(activity=discord.Game(name="/команды | /магазин"))
 
 token = os.getenv('TOKEN')
 if not token:
