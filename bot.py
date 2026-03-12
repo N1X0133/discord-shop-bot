@@ -15,9 +15,10 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 # Файл для хранения данных
 DATA_FILE = 'user_data.json'
 
-# ID администраторов
+# ID администраторов (ДОБАВЛЕН НОВЫЙ)
 ADMIN_IDS = [
     927642459998138418,  # Ваш ID
+    500965898476322817,  # Новый админ
 ]
 
 # ID каналов
@@ -45,7 +46,84 @@ def is_allowed_channel(channel_id, command_type):
         return channel_id == BALANCE_CHANNEL_ID
     return channel_id == SHOP_CHANNEL_ID
 
-# Модальное окно для покупки
+# Кнопки для выдачи (ВОССТАНОВЛЕНЫ)
+class DeliveryView(View):
+    def __init__(self, user_id, item_name, quantity, nickname, cid, purchase_id):
+        super().__init__(timeout=None)
+        self.user_id = user_id
+        self.item_name = item_name
+        self.quantity = quantity
+        self.nickname = nickname
+        self.cid = cid
+        self.purchase_id = purchase_id
+    
+    @discord.ui.button(label="✅ Выдать", style=discord.ButtonStyle.green, emoji="✅")
+    async def deliver_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_admin(interaction.user.id):
+            await interaction.response.send_message("❌ Только администраторы!", ephemeral=True)
+            return
+        
+        data = load_data()
+        user_id = str(self.user_id)
+        
+        if user_id in data:
+            for item in data[user_id].get("pending_items", []):
+                if (item.get("name") == self.item_name and 
+                    item.get("nickname") == self.nickname and 
+                    not item.get("delivered")):
+                    item["delivered"] = True
+                    
+                    if "inventory" not in data[user_id]:
+                        data[user_id]["inventory"] = []
+                    
+                    for i in range(self.quantity):
+                        data[user_id]["inventory"].append({
+                            "name": self.item_name,
+                            "received_date": datetime.now().strftime("%d.%m.%Y %H:%M"),
+                            "received_by": interaction.user.name,
+                            "nickname": self.nickname,
+                            "cid": self.cid
+                        })
+                    break
+            
+            save_data(data)
+            
+            try:
+                user = await bot.fetch_user(int(user_id))
+                if user:
+                    embed = discord.Embed(
+                        title="✅ Товар выдан!",
+                        description=f"Вам выдан товар: **{self.item_name}** x{self.quantity}",
+                        color=discord.Color.green()
+                    )
+                    embed.add_field(name="Выдал", value=interaction.user.name)
+                    embed.add_field(name="Дата", value=datetime.now().strftime("%d.%m.%Y %H:%M"))
+                    embed.set_footer(text="by Ilya Vetrov")
+                    await user.send(embed=embed)
+            except:
+                pass
+            
+            embed = interaction.message.embeds[0]
+            embed.color = discord.Color.green()
+            embed.add_field(name="Статус", value="✅ ВЫДАНО", inline=False)
+            
+            await interaction.message.edit(embed=embed, view=None)
+            await interaction.response.send_message("✅ Товар отмечен как выданный!", ephemeral=True)
+    
+    @discord.ui.button(label="❌ Не выдавать", style=discord.ButtonStyle.red, emoji="❌")
+    async def not_deliver_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_admin(interaction.user.id):
+            await interaction.response.send_message("❌ Только администраторы!", ephemeral=True)
+            return
+        
+        embed = interaction.message.embeds[0]
+        embed.color = discord.Color.red()
+        embed.add_field(name="Статус", value="❌ ОТКАЗАНО", inline=False)
+        
+        await interaction.message.edit(embed=embed, view=None)
+        await interaction.response.send_message("❌ Товар отмечен как отказанный", ephemeral=True)
+
+# Модальное окно для покупки (ИСПРАВЛЕНО: максимум 1000)
 class PurchaseModal(Modal, title="Покупка товара"):
     def __init__(self, item_name, item_price):
         super().__init__()
@@ -54,9 +132,9 @@ class PurchaseModal(Modal, title="Покупка товара"):
         
         self.quantity = TextInput(
             label="Количество",
-            placeholder="Введите количество (1-99)",
+            placeholder="Введите количество (1-1000)",
             required=True,
-            max_length=2
+            max_length=4
         )
         self.add_item(self.quantity)
         
@@ -79,8 +157,8 @@ class PurchaseModal(Modal, title="Покупка товара"):
     async def on_submit(self, interaction: discord.Interaction):
         try:
             quantity = int(self.quantity.value)
-            if quantity < 1 or quantity > 99:
-                await interaction.response.send_message("❌ Количество от 1 до 99!", ephemeral=True)
+            if quantity < 1 or quantity > 1000:  # ИСПРАВЛЕНО: 1000 вместо 99
+                await interaction.response.send_message("❌ Количество от 1 до 1000!", ephemeral=True)
                 return
         except:
             await interaction.response.send_message("❌ Введите число!", ephemeral=True)
@@ -109,7 +187,10 @@ class PurchaseModal(Modal, title="Покупка товара"):
         # Списываем деньги
         data[user_id]["balance"] -= total_price
         
+        purchase_id = f"{user_id}_{datetime.now().timestamp()}"
+        
         purchase = {
+            "id": purchase_id,
             "name": self.item_name,
             "price": self.item_price,
             "quantity": quantity,
@@ -135,11 +216,11 @@ class PurchaseModal(Modal, title="Покупка товара"):
         
         await interaction.response.send_message(embed=embed, ephemeral=True)
         
-        # Уведомление админам
+        # Уведомление админам с кнопками (ВОССТАНОВЛЕНО)
         admin_channel = bot.get_channel(ADMIN_CHANNEL_ID)
         if admin_channel:
             admin_embed = discord.Embed(title="🛒 НОВАЯ ПОКУПКА!", color=discord.Color.blue())
-            admin_embed.add_field(name="Покупатель", value=interaction.user.name, inline=False)
+            admin_embed.add_field(name="Покупатель", value=f"{interaction.user.name} (`{interaction.user.id}`)", inline=False)
             admin_embed.add_field(name="Товар", value=self.item_name, inline=True)
             admin_embed.add_field(name="Количество", value=f"{quantity} шт.", inline=True)
             admin_embed.add_field(name="Цена", value=f"{total_price} монет", inline=True)
@@ -147,36 +228,37 @@ class PurchaseModal(Modal, title="Покупка товара"):
             admin_embed.add_field(name="CID", value=self.cid.value, inline=True)
             admin_embed.set_footer(text="by Ilya Vetrov")
             
-            await admin_channel.send(embed=admin_embed)
+            view = DeliveryView(interaction.user.id, self.item_name, quantity, self.nickname.value, self.cid.value, purchase_id)
+            await admin_channel.send(embed=admin_embed, view=view)
 
-# Класс для магазина
+# Класс для магазина (ОБНОВЛЕНЫ ЦЕНЫ)
 class ShopView(View):
     def __init__(self):
         super().__init__(timeout=None)
         
         self.shop_items = [
-            # Глава 1: Расходники
-            {"name": "💊 Реанимнабор", "price": 150},
-            {"name": "💉 Набор для самореанимации", "price": 200},
-            {"name": "🛡️ Ремкоплект для брони", "price": 100},
-            {"name": "🔫 MG Ammo", "price": 50},
-            {"name": "🎯 Sniper Ammo", "price": 75},
+            # Глава 1: Расходники (НОВЫЕ ЦЕНЫ)
+            {"name": "💊 Реанимнабор", "price": 50},
+            {"name": "💉 Набор для самореанимации", "price": 100},
+            {"name": "🛡️ Ремкоплект для брони", "price": 10},
+            {"name": "🔫 MG Ammo", "price": 5, "note": "за 100 шт"},
+            {"name": "🎯 Sniper Ammo", "price": 50, "note": "за 10 шт"},
             
-            # Глава 2: Модули
-            {"name": "🔇 Глушитель", "price": 300},
-            {"name": "📦 Увеличенный магазин (винтовка)", "price": 250},
-            {"name": "📦 Увеличенный магазин (пистолет)", "price": 200},
-            {"name": "📦 Увеличенный магазин (ПП)", "price": 225},
-            {"name": "📦 Увеличенный магазин (снайперская винтовка)", "price": 275},
-            {"name": "🥁 Барабанный магазин (винтовка)", "price": 400},
+            # Глава 2: Модули (НОВЫЕ ЦЕНЫ)
+            {"name": "🔇 Глушитель", "price": 10},
+            {"name": "🥁 Барабанный магазин (винтовка)", "price": 200},
+            {"name": "📦 Увеличенный магазин (винтовка)", "price": 80},
+            {"name": "📦 Увеличенный магазин (пистолет)", "price": 10},
+            {"name": "🥁 Барабанный магазин (ПП)", "price": 40},
+            {"name": "📦 Увеличенный магазин (снайперская винтовка)", "price": 45},
             
-            # Глава 3: Спец. вооружение
-            {"name": "🔫 Тяжелый пулемет", "price": 800},
-            {"name": "⚡ Тяжелый пулемет MK2", "price": 1200},
-            {"name": "🎯 Тяжелая снайперская", "price": 1000},
-            {"name": "⭐ Тяжелая снайперская MK2", "price": 1500},
-            {"name": "🔫 Штурмовой дробовик", "price": 600},
-            {"name": "🔫 Тяжелый револьвер MK2", "price": 700},
+            # Глава 3: Спец. вооружение (НОВЫЕ ЦЕНЫ)
+            {"name": "🔫 Тяжелый пулемет", "price": 65},
+            {"name": "⚡ Тяжелый пулемет MK2", "price": 300},
+            {"name": "🎯 Тяжелая снайперская", "price": 300},
+            {"name": "⭐ Тяжелая снайперская MK2", "price": 800},
+            {"name": "🔫 Штурмовой дробовик", "price": 500},
+            {"name": "🔫 Тяжелый револьвер MK2", "price": 400},
         ]
         
         options = [discord.SelectOption(label=item["name"], value=str(i)) for i, item in enumerate(self.shop_items)]
@@ -198,7 +280,8 @@ class ShopView(View):
     async def select_callback(self, interaction: discord.Interaction):
         index = int(self.select.values[0])
         self.selected_item = self.shop_items[index]
-        await interaction.response.send_message(f"✓ Вы выбрали: {self.selected_item['name']}", ephemeral=True)
+        note = f" ({self.selected_item.get('note', '')})" if self.selected_item.get('note') else ""
+        await interaction.response.send_message(f"✓ Вы выбрали: {self.selected_item['name']}{note}", ephemeral=True)
     
     async def buy_callback(self, interaction: discord.Interaction):
         if not self.selected_item:
@@ -259,32 +342,32 @@ async def shop_command(ctx):
     embed = discord.Embed(
         title="🛒 МАГАЗИН",
         description="**Глава 1: Расходники**\n"
-                   "💊 Реанимнабор — 150 монет\n"
-                   "💉 Набор для самореанимации — 200 монет\n"
-                   "🛡️ Ремкоплект для брони — 100 монет\n"
-                   "🔫 MG Ammo — 50 монет\n"
-                   "🎯 Sniper Ammo — 75 монет\n\n"
+                   "💊 Реанимнабор — 50 монет/шт\n"
+                   "💉 Набор для самореанимации — 100 монет/шт\n"
+                   "🛡️ Ремкоплект для брони — 10 монет/шт\n"
+                   "🔫 MG Ammo — 5 монет/100 шт\n"
+                   "🎯 Sniper Ammo — 50 монет/10 шт\n\n"
                    
                    "**Глава 2: Модули**\n"
-                   "🔇 Глушитель — 300 монет\n"
-                   "📦 Увеличенный магазин (винтовка) — 250 монет\n"
-                   "📦 Увеличенный магазин (пистолет) — 200 монет\n"
-                   "📦 Увеличенный магазин (ПП) — 225 монет\n"
-                   "📦 Увеличенный магазин (снайперская винтовка) — 275 монет\n"
-                   "🥁 Барабанный магазин (винтовка) — 400 монет\n\n"
+                   "🔇 Глушитель — 10 монет/шт\n"
+                   "🥁 Барабанный магазин (винтовка) — 200 монет/шт\n"
+                   "📦 Увеличенный магазин (винтовка) — 80 монет/шт\n"
+                   "📦 Увеличенный магазин (пистолет) — 10 монет/шт\n"
+                   "🥁 Барабанный магазин (ПП) — 40 монет/шт\n"
+                   "📦 Увеличенный магазин (снайперская винтовка) — 45 монет/шт\n\n"
                    
                    "**Глава 3: Спец. вооружение**\n"
-                   "🔫 Тяжелый пулемет — 800 монет\n"
-                   "⚡ Тяжелый пулемет MK2 — 1200 монет\n"
-                   "🎯 Тяжелая снайперская — 1000 монет\n"
-                   "⭐ Тяжелая снайперская MK2 — 1500 монет\n"
-                   "🔫 Штурмовой дробовик — 600 монет\n"
-                   "🔫 Тяжелый револьвер MK2 — 700 монет",
+                   "🔫 Тяжелый пулемет — 65 монет/шт\n"
+                   "⚡ Тяжелый пулемет MK2 — 300 монет/шт\n"
+                   "🎯 Тяжелая снайперская — 300 монет/шт\n"
+                   "⭐ Тяжелая снайперская MK2 — 800 монет/шт\n"
+                   "🔫 Штурмовой дробовик — 500 монет/шт\n"
+                   "🔫 Тяжелый револьвер MK2 — 400 монет/шт",
         color=discord.Color.gold()
     )
     embed.add_field(
         name="ℹ Информация",
-        value="✅ При покупке укажите количество, ник и CID\n✅ Товары выдаются в конце недели",
+        value="✅ Можно купить до 1000 штук\n✅ При покупке укажите ник и CID\n✅ Товары выдаются в конце недели",
         inline=False
     )
     embed.set_footer(text="by Ilya Vetrov")
