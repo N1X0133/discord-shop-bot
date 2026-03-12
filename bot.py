@@ -31,9 +31,9 @@ ADMIN_IDS = [
 ]
 
 # ID каналов
-BALANCE_CHANNEL_ID = 1481753586835783861   # Только !баланс и /баланс
-SHOP_CHANNEL_ID = 1481753891124019302      # Магазин и всё остальное
-ADMIN_CHANNEL_ID = 1481754087614841033     # Админский канал
+BALANCE_CHANNEL_ID = 1481753586835783861   # Только баланс
+SHOP_CHANNEL_ID = 1481753891124019302      # Магазин
+ADMIN_CHANNEL_ID = 1481754087614841033     # Админский
 
 def load_data():
     if os.path.exists(DATA_FILE):
@@ -55,7 +55,8 @@ def is_allowed_channel(channel_id, command_type):
         return channel_id == BALANCE_CHANNEL_ID
     return channel_id == SHOP_CHANNEL_ID
 
-# Кнопки для выдачи
+# ==================== КНОПКИ ВЫДАЧИ ====================
+
 class DeliveryView(View):
     def __init__(self, user_id, item_name, quantity, nickname, cid, purchase_id):
         super().__init__(timeout=None)
@@ -132,7 +133,8 @@ class DeliveryView(View):
         await interaction.message.edit(embed=embed, view=None)
         await interaction.response.send_message("❌ Товар отмечен как отказанный", ephemeral=True)
 
-# Модальное окно для покупки
+# ==================== МОДАЛЬНОЕ ОКНО (ИСПРАВЛЕНО) ====================
+
 class PurchaseModal(Modal, title="Покупка товара"):
     def __init__(self, item_name, item_price):
         super().__init__()
@@ -164,15 +166,22 @@ class PurchaseModal(Modal, title="Покупка товара"):
         self.add_item(self.cid)
     
     async def on_submit(self, interaction: discord.Interaction):
+        # Шаг 1: Проверяем количество
         try:
             quantity = int(self.quantity.value)
             if quantity < 1 or quantity > 1000:
                 await interaction.response.send_message("❌ Количество от 1 до 1000!", ephemeral=True)
                 return
-        except:
+        except ValueError:
             await interaction.response.send_message("❌ Введите число!", ephemeral=True)
             return
         
+        # Шаг 2: Проверяем ник и CID
+        if not self.nickname.value or not self.cid.value:
+            await interaction.response.send_message("❌ Никнейм и CID обязательны!", ephemeral=True)
+            return
+        
+        # Шаг 3: Загружаем данные
         data = load_data()
         user_id = str(interaction.user.id)
         total_price = self.item_price * quantity
@@ -186,6 +195,7 @@ class PurchaseModal(Modal, title="Покупка товара"):
                 "name": interaction.user.name
             }
         
+        # Шаг 4: Проверяем баланс
         if data[user_id]["balance"] < total_price:
             await interaction.response.send_message(
                 f"❌ Недостаточно средств! Нужно: {total_price} монет",
@@ -193,6 +203,7 @@ class PurchaseModal(Modal, title="Покупка товара"):
             )
             return
         
+        # Шаг 5: Списываем деньги
         data[user_id]["balance"] -= total_price
         
         purchase_id = f"{user_id}_{datetime.now().timestamp()}"
@@ -214,6 +225,7 @@ class PurchaseModal(Modal, title="Покупка товара"):
         data[user_id]["name"] = interaction.user.name
         save_data(data)
         
+        # Шаг 6: Отправляем подтверждение пользователю
         embed = discord.Embed(title="✅ ПОКУПКА СОВЕРШЕНА!", color=discord.Color.green())
         embed.add_field(name="Товар", value=self.item_name, inline=True)
         embed.add_field(name="Количество", value=f"{quantity} шт.", inline=True)
@@ -224,6 +236,7 @@ class PurchaseModal(Modal, title="Покупка товара"):
         
         await interaction.response.send_message(embed=embed, ephemeral=True)
         
+        # Шаг 7: Уведомление админам
         admin_channel = bot.get_channel(ADMIN_CHANNEL_ID)
         if admin_channel:
             admin_embed = discord.Embed(title="🛒 НОВАЯ ПОКУПКА!", color=discord.Color.blue())
@@ -238,7 +251,8 @@ class PurchaseModal(Modal, title="Покупка товара"):
             view = DeliveryView(interaction.user.id, self.item_name, quantity, self.nickname.value, self.cid.value, purchase_id)
             await admin_channel.send(embed=admin_embed, view=view)
 
-# Класс для магазина
+# ==================== КЛАСС МАГАЗИНА ====================
+
 class ShopView(View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -248,8 +262,8 @@ class ShopView(View):
             {"name": "💊 Реанимнабор", "price": 50},
             {"name": "💉 Набор для самореанимации", "price": 100},
             {"name": "🛡️ Ремкоплект для брони", "price": 10},
-            {"name": "🔫 MG Ammo", "price": 5, "note": "за 100 шт"},
-            {"name": "🎯 Sniper Ammo", "price": 50, "note": "за 10 шт"},
+            {"name": "🔫 MG Ammo", "price": 5},
+            {"name": "🎯 Sniper Ammo", "price": 50},
             
             # Глава 2: Модули
             {"name": "🔇 Глушитель", "price": 10},
@@ -287,8 +301,7 @@ class ShopView(View):
     async def select_callback(self, interaction: discord.Interaction):
         index = int(self.select.values[0])
         self.selected_item = self.shop_items[index]
-        note = f" ({self.selected_item.get('note', '')})" if self.selected_item.get('note') else ""
-        await interaction.response.send_message(f"✓ Вы выбрали: {self.selected_item['name']}{note}", ephemeral=True)
+        await interaction.response.send_message(f"✓ Вы выбрали: {self.selected_item['name']}", ephemeral=True)
     
     async def buy_callback(self, interaction: discord.Interaction):
         if not self.selected_item:
@@ -313,6 +326,7 @@ class ShopView(View):
             )
             return
         
+        # Открываем модальное окно
         modal = PurchaseModal(self.selected_item["name"], self.selected_item["price"])
         await interaction.response.send_modal(modal)
     
@@ -351,8 +365,8 @@ async def slash_shop(interaction: discord.Interaction):
                    "💊 Реанимнабор — 50 монет/шт\n"
                    "💉 Набор для самореанимации — 100 монет/шт\n"
                    "🛡️ Ремкоплект для брони — 10 монет/шт\n"
-                   "🔫 MG Ammo — 5 монет/100 шт\n"
-                   "🎯 Sniper Ammo — 50 монет/10 шт\n\n"
+                   "🔫 MG Ammo — 5 монет/шт\n"
+                   "🎯 Sniper Ammo — 50 монет/шт\n\n"
                    
                    "**Глава 2: Модули**\n"
                    "🔇 Глушитель — 10 монет/шт\n"
