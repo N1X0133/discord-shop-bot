@@ -4,6 +4,7 @@ from discord import app_commands
 from discord.ui import Select, View, Button, Modal, TextInput
 import json
 import os
+import shutil
 from datetime import datetime
 
 # Настройки бота
@@ -21,9 +22,13 @@ class ShopBot(commands.Bot):
 
 bot = ShopBot()
 
-# Файлы для хранения данных
-DATA_FILE = 'user_data.json'
-ADMINS_FILE = 'admins.json'
+# ЗАЩИЩЕННАЯ ПАПКА ДЛЯ ДАННЫХ
+DATA_DIR = '/app/data'
+os.makedirs(DATA_DIR, exist_ok=True)
+
+# Файлы теперь в защищенной папке
+DATA_FILE = os.path.join(DATA_DIR, 'user_data.json')
+ADMINS_FILE = os.path.join(DATA_DIR, 'admins.json')
 
 # ГЛАВНЫЙ АДМИН (только он может добавлять других)
 MAIN_ADMIN_ID = 927642459998138418
@@ -31,14 +36,14 @@ MAIN_ADMIN_ID = 927642459998138418
 # ID администраторов (текущие)
 ADMIN_IDS = [
     927642459998138418,  # Главный админ
-    500965898476322817,
-    271067502102970371,  # Админ 1
+    500965898476322817,  # Админ 1
 ]
 
 # ID каналов
 BALANCE_CHANNEL_ID = 1481753586835783861   # Только баланс
 SHOP_CHANNEL_ID = 1481753891124019302      # Магазин
 ADMIN_CHANNEL_ID = 1481754087614841033     # Админский
+ANNOUNCE_CHANNEL_ID = 1483097607424446514  # Канал для объявлений
 
 # Загрузка админов из файла
 def load_admins():
@@ -48,7 +53,6 @@ def load_admins():
             with open(ADMINS_FILE, 'r', encoding='utf-8') as f:
                 loaded = json.load(f)
                 if isinstance(loaded, list):
-                    # Объединяем с основным списком, удаляем дубликаты
                     ADMIN_IDS = list(set(ADMIN_IDS + loaded))
                     print(f"✅ Загружено админов: {len(ADMIN_IDS)}")
     except Exception as e:
@@ -70,18 +74,27 @@ def load_data():
             with open(DATA_FILE, 'r', encoding='utf-8') as f:
                 data = json.load(f)
                 print(f"✅ Загружено пользователей: {len(data)}")
-                # Подсчет общего баланса
                 total_balance = sum(user.get("balance", 0) for user in data.values())
                 print(f"💰 Общий баланс: {total_balance} монет")
                 return data
     except Exception as e:
         print(f"❌ Ошибка загрузки данных: {e}")
+    
+    if os.path.exists('user_data.json'):
+        print("🔄 Восстанавливаю данные из старого файла...")
+        with open('user_data.json', 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        save_data(data)
+        return data
+    
     return {}
 
 # Сохранение данных пользователей
 def save_data(data):
     try:
         with open(DATA_FILE, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=4)
+        with open('user_data.json', 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=4)
         print(f"✅ Данные сохранены. Пользователей: {len(data)}")
     except Exception as e:
@@ -106,116 +119,104 @@ def is_allowed_channel(channel_id, command_type):
         return channel_id == BALANCE_CHANNEL_ID
     return channel_id == SHOP_CHANNEL_ID
 
-# ==================== КОМАНДА ДОБАВЛЕНИЯ АДМИНОВ ====================
+# ==================== НОВАЯ КОМАНДА ДЛЯ ОБЪЯВЛЕНИЙ ====================
 
-@bot.command(name='добавить_админа')
-async def add_admin_command(ctx, user: discord.User):
-    """Добавить нового администратора (только для главного админа)"""
+@bot.command(name='объявление')
+async def announcement_command(ctx, *, текст: str):
+    """📢 Отправить объявление в канал новостей (только для админов)"""
     
-    if ctx.author.id != MAIN_ADMIN_ID:
-        await ctx.send("❌ Только главный администратор может добавлять новых админов!")
+    if not is_admin(ctx.author.id):
+        await ctx.send("❌ Только администраторы могут использовать эту команду!")
         return
     
-    if user.bot:
-        await ctx.send("❌ Боты не могут быть администраторами!")
+    announce_channel = bot.get_channel(ANNOUNCE_CHANNEL_ID)
+    if not announce_channel:
+        await ctx.send(f"❌ Канал <#{ANNOUNCE_CHANNEL_ID}> не найден!")
         return
-    
-    if user.id in ADMIN_IDS:
-        await ctx.send(f"❌ Пользователь {user.mention} уже является администратором!")
-        return
-    
-    ADMIN_IDS.append(user.id)
-    save_admins()
     
     embed = discord.Embed(
-        title="👑 НОВЫЙ АДМИНИСТРАТОР",
-        description=f"Главный админ **{ctx.author.name}** добавил нового администратора!",
-        color=0xf1c40f,
+        title="📢 ОБЪЯВЛЕНИЕ АДМИНИСТРАЦИИ",
+        description=текст,
+        color=0x9b59b6,
         timestamp=datetime.now()
     )
-    embed.add_field(name="Новый админ", value=user.mention, inline=True)
-    embed.add_field(name="ID", value=f"`{user.id}`", inline=True)
-    embed.set_thumbnail(url=user.avatar.url if user.avatar else None)
+    embed.set_author(
+        name=ctx.author.name, 
+        icon_url=ctx.author.avatar.url if ctx.author.avatar else None
+    )
     embed.set_footer(text="by Ilya Vetrov")
     
-    await ctx.send(embed=embed)
-    
-    try:
-        dm_embed = discord.Embed(
-            title="👑 ВАС НАЗНАЧИЛИ АДМИНИСТРОМ!",
-            description=f"Главный администратор **{ctx.author.name}** добавил вас в список администраторов бота.",
-            color=0xf1c40f
-        )
-        dm_embed.add_field(name="Ваши новые возможности", 
-                          value="• Выдавать монеты (`!датьмонет`)\n"
-                                "• Смотреть список невыданного (`!невыдано`)\n"
-                                "• Отмечать предметы как выданные (`!выдано`)\n"
-                                "• Смотреть статистику (`!статистика`)", 
-                          inline=False)
-        dm_embed.set_footer(text="by Ilya Vetrov")
-        
-        await user.send(embed=dm_embed)
-    except:
-        pass
+    await announce_channel.send(embed=embed)
+    await ctx.send(f"✅ Объявление отправлено в канал <#{ANNOUNCE_CHANNEL_ID}>")
 
-@bot.command(name='удалить_админа')
-async def remove_admin_command(ctx, user: discord.User):
-    """Удалить администратора (только для главного админа)"""
+@bot.command(name='объявление_срочное')
+async def announcement_urgent_command(ctx, *, текст: str):
+    """🚨 Отправить срочное объявление (только для админов)"""
     
-    if ctx.author.id != MAIN_ADMIN_ID:
-        await ctx.send("❌ Только главный администратор может удалять админов!")
+    if not is_admin(ctx.author.id):
+        await ctx.send("❌ Только администраторы могут использовать эту команду!")
         return
     
-    if user.id == MAIN_ADMIN_ID:
-        await ctx.send("❌ Нельзя удалить главного администратора!")
+    announce_channel = bot.get_channel(ANNOUNCE_CHANNEL_ID)
+    if not announce_channel:
+        await ctx.send(f"❌ Канал <#{ANNOUNCE_CHANNEL_ID}> не найден!")
         return
-    
-    if user.id not in ADMIN_IDS:
-        await ctx.send(f"❌ Пользователь {user.mention} не является администратором!")
-        return
-    
-    ADMIN_IDS.remove(user.id)
-    save_admins()
     
     embed = discord.Embed(
-        title="👑 АДМИНИСТРАТОР УДАЛЕН",
-        description=f"Главный админ **{ctx.author.name}** удалил администратора",
+        title="🚨 СРОЧНОЕ ОБЪЯВЛЕНИЕ",
+        description=текст,
         color=0xe74c3c,
         timestamp=datetime.now()
     )
-    embed.add_field(name="Бывший админ", value=user.mention, inline=True)
-    embed.add_field(name="ID", value=f"`{user.id}`", inline=True)
+    embed.set_author(
+        name=ctx.author.name, 
+        icon_url=ctx.author.avatar.url if ctx.author.avatar else None
+    )
     embed.set_footer(text="by Ilya Vetrov")
     
-    await ctx.send(embed=embed)
+    await announce_channel.send("@everyone", embed=embed)
+    await ctx.send(f"✅ Срочное объявление отправлено в канал <#{ANNOUNCE_CHANNEL_ID}>")
 
-@bot.command(name='список_админов')
-async def list_admins_command(ctx):
-    """Показать список всех администраторов"""
+@bot.command(name='объявление_embed')
+async def announcement_embed_command(ctx, цвет: str, заголовок: str, *, текст: str):
+    """🎨 Отправить объявление с выбором цвета (только для админов)"""
     
-    admin_list = []
-    for admin_id in ADMIN_IDS:
-        try:
-            user = await bot.fetch_user(admin_id)
-            if admin_id == MAIN_ADMIN_ID:
-                admin_list.append(f"👑 **{user.name}** (Главный админ)")
-            else:
-                admin_list.append(f"• {user.name}")
-        except:
-            if admin_id == MAIN_ADMIN_ID:
-                admin_list.append(f"👑 Админ (ID: {admin_id}) - Главный")
-            else:
-                admin_list.append(f"• Админ (ID: {admin_id})")
+    if not is_admin(ctx.author.id):
+        await ctx.send("❌ Только администраторы могут использовать эту команду!")
+        return
+    
+    color_map = {
+        "красный": 0xe74c3c,
+        "зеленый": 0x2ecc71,
+        "синий": 0x3498db,
+        "желтый": 0xf1c40f,
+        "фиолетовый": 0x9b59b6,
+        "оранжевый": 0xe67e22,
+        "розовый": 0xe91e63,
+        "голубой": 0x00ffff
+    }
+    
+    color = color_map.get(цвет.lower(), 0x3498db)
+    
+    announce_channel = bot.get_channel(ANNOUNCE_CHANNEL_ID)
+    if not announce_channel:
+        await ctx.send(f"❌ Канал <#{ANNOUNCE_CHANNEL_ID}> не найден!")
+        return
     
     embed = discord.Embed(
-        title="👑 СПИСОК АДМИНИСТРАТОРОВ",
-        description="\n".join(admin_list),
-        color=0xf1c40f,
+        title=заголовок,
+        description=текст,
+        color=color,
         timestamp=datetime.now()
     )
-    embed.set_footer(text=f"Всего админов: {len(ADMIN_IDS)} | by Ilya Vetrov")
+    embed.set_author(
+        name=ctx.author.name, 
+        icon_url=ctx.author.avatar.url if ctx.author.avatar else None
+    )
+    embed.set_footer(text="by Ilya Vetrov")
     
-    await ctx.send(embed=embed)
+    await announce_channel.send(embed=embed)
+    await ctx.send(f"✅ Объявление отправлено в канал <#{ANNOUNCE_CHANNEL_ID}>")
 
 # ==================== КНОПКИ ВЫДАЧИ ====================
 
@@ -260,7 +261,6 @@ class DeliveryView(View):
             
             save_data(data)
             
-            # УВЕДОМЛЕНИЕ ПОЛЬЗОВАТЕЛЮ
             try:
                 user = await bot.fetch_user(int(user_id))
                 if user:
@@ -274,15 +274,11 @@ class DeliveryView(View):
                     user_embed.add_field(name="Выдал", value=f"```{interaction.user.name}```", inline=True)
                     user_embed.add_field(name="Никнейм", value=f"```{self.nickname}```", inline=True)
                     user_embed.add_field(name="CID", value=f"```{self.cid}```", inline=True)
-                    user_embed.add_field(name="📦 Где посмотреть?", 
-                                        value="Используйте `/инвентарь` чтобы увидеть все полученные предметы", 
-                                        inline=False)
                     user_embed.set_footer(text="by Ilya Vetrov")
                     await user.send(embed=user_embed)
             except:
                 pass
             
-            # Обновляем сообщение
             embed = interaction.message.embeds[0]
             embed.color = discord.Color.green()
             embed.add_field(name="Статус", value="✅ ВЫДАНО", inline=False)
@@ -314,7 +310,7 @@ class PurchaseModal(Modal, title="🛒 Оформление покупки"):
         
         self.quantity = TextInput(
             label="Количество",
-            placeholder=f"Введите количество (1-1000){' ' + item_note if item_note else ''}",
+            placeholder=f"Введите количество (1-1000)",
             required=True,
             max_length=4
         )
@@ -391,6 +387,11 @@ class PurchaseModal(Modal, title="🛒 Оформление покупки"):
         data[user_id]["name"] = interaction.user.name
         save_data(data)
         
+        # Проверяем, есть ли специальное примечание для этого товара
+        special_note = ""
+        if self.item_name == "⚡ Максимальный ур. выносливости":
+            special_note = "\n❗ Вы должны быть в игре чтобы товар был выдан"
+        
         embed = discord.Embed(
             title="✅ ПОКУПКА УСПЕШНО ОФОРМЛЕНА!", 
             color=0x2ecc71,
@@ -401,7 +402,12 @@ class PurchaseModal(Modal, title="🛒 Оформление покупки"):
         embed.add_field(name="💰 Цена", value=f"```{total_price} монет```", inline=True)
         embed.add_field(name="👤 Никнейм", value=f"```{self.nickname.value}```", inline=True)
         embed.add_field(name="🆔 CID", value=f"```{self.cid.value}```", inline=True)
-        embed.add_field(name="⏳ Статус", value="```Ожидает выдачи администратором```", inline=False)
+        
+        if special_note:
+            embed.add_field(name="⚠️ ВНИМАНИЕ", value=special_note, inline=False)
+        else:
+            embed.add_field(name="⏳ Статус", value="```Ожидает выдачи администратором```", inline=False)
+        
         embed.set_footer(text="by Ilya Vetrov", icon_url=interaction.user.avatar.url if interaction.user.avatar else None)
         
         await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -421,6 +427,10 @@ class PurchaseModal(Modal, title="🛒 Оформление покупки"):
             admin_embed.add_field(name="👤 Никнейм", value=f"```{self.nickname.value}```", inline=True)
             admin_embed.add_field(name="🆔 CID", value=f"```{self.cid.value}```", inline=True)
             admin_embed.add_field(name="📊 Баланс после", value=f"```{data[user_id]['balance']} монет```", inline=False)
+            
+            if self.item_name == "⚡ Максимальный ур. выносливости":
+                admin_embed.add_field(name="⚠️ ВНИМАНИЕ", value="❗ Требуется присутствие в игре для выдачи", inline=False)
+            
             admin_embed.set_footer(text="by Ilya Vetrov")
             
             view = DeliveryView(interaction.user.id, self.item_name, quantity, self.nickname.value, self.cid.value, purchase_id)
@@ -433,34 +443,37 @@ class ShopView(View):
         super().__init__(timeout=None)
         
         self.shop_items = [
-            # Глава 1: Расходники
-            {"name": "💊 Реанимнабор", "price": 50, "note": ""},
-            {"name": "💉 Набор для самореанимации", "price": 100, "note": ""},
-            {"name": "🛡️ Ремкоплект для брони", "price": 10, "note": ""},
+            # Глава 1: Расходники (Набор самореанимации теперь 50)
+            {"name": "💊 Реанимнабор", "price": 50},
+            {"name": "💉 Набор для самореанимации", "price": 50},  # Цена изменена с 100 на 50
+            {"name": "🛡️ Ремкоплект для брони", "price": 10},
             {"name": "🔫 MG Ammo", "price": 5, "note": "за 100 шт"},
             {"name": "🎯 Sniper Ammo", "price": 50, "note": "за 10 шт"},
             
+            # ⚡ НОВЫЙ ТОВАР в Главе 1
+            {"name": "⚡ Максимальный ур. выносливости", "price": 300, "note": "❗ Вы должны быть в игре"},
+            
             # Глава 2: Модули
-            {"name": "🔇 Глушитель", "price": 10, "note": ""},
-            {"name": "🥁 Барабанный магазин (винтовка)", "price": 200, "note": ""},
-            {"name": "📦 Увеличенный магазин (винтовка)", "price": 80, "note": ""},
-            {"name": "📦 Увеличенный магазин (пистолет)", "price": 10, "note": ""},
-            {"name": "🥁 Барабанный магазин (ПП)", "price": 40, "note": ""},
-            {"name": "📦 Увеличенный магазин (снайперская винтовка)", "price": 45, "note": ""},
+            {"name": "🔇 Глушитель", "price": 10},
+            {"name": "🥁 Барабанный магазин (винтовка)", "price": 200},
+            {"name": "📦 Увеличенный магазин (винтовка)", "price": 80},
+            {"name": "📦 Увеличенный магазин (пистолет)", "price": 10},
+            {"name": "🥁 Барабанный магазин (ПП)", "price": 40},
+            {"name": "📦 Увеличенный магазин (снайперская винтовка)", "price": 45},
             
             # Глава 3: Спец. вооружение
-            {"name": "🔫 Тяжелый пулемет", "price": 65, "note": ""},
-            {"name": "⚡ Тяжелый пулемет MK2", "price": 300, "note": ""},
-            {"name": "🎯 Тяжелая снайперская", "price": 300, "note": ""},
-            {"name": "⭐ Тяжелая снайперская MK2", "price": 800, "note": ""},
-            {"name": "🔫 Штурмовой дробовик", "price": 500, "note": ""},
-            {"name": "🔫 Тяжелый револьвер MK2", "price": 400, "note": ""},
+            {"name": "🔫 Тяжелый пулемет", "price": 65},
+            {"name": "⚡ Тяжелый пулемет MK2", "price": 300},
+            {"name": "🎯 Тяжелая снайперская", "price": 300},
+            {"name": "⭐ Тяжелая снайперская MK2", "price": 800},
+            {"name": "🔫 Штурмовой дробовик", "price": 500},
+            {"name": "🔫 Тяжелый револьвер MK2", "price": 400},
         ]
         
         options = []
         for i, item in enumerate(self.shop_items):
             label = item["name"]
-            if item["note"]:
+            if "note" in item:
                 label += f" ({item['note']})"
             options.append(discord.SelectOption(label=label, value=str(i), description=f"{item['price']} монет"))
         
@@ -484,9 +497,13 @@ class ShopView(View):
         self.selected_item = self.shop_items[index]
         self.selected_note = self.selected_item.get("note", "")
         
+        description = f"**{self.selected_item['name']}**\nЦена: {self.selected_item['price']} монет"
+        if self.selected_note:
+            description += f"\n*{self.selected_note}*"
+        
         embed = discord.Embed(
             title="✅ Товар выбран",
-            description=f"**{self.selected_item['name']}**\nЦена: {self.selected_item['price']} монет {self.selected_note}",
+            description=description,
             color=0x3498db
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -563,11 +580,13 @@ async def slash_shop(interaction: discord.Interaction):
     embed.add_field(
         name="📦 **Глава 1: Расходники**",
         value="```"
-              "💊 Реанимнабор                 50 монет/шт\n"
-              "💉 Набор самореанимации        100 монет/шт\n"
-              "🛡️ Ремкоплект для брони       10 монет/шт\n"
-              "🔫 MG Ammo                     5 монет/100 шт\n"
-              "🎯 Sniper Ammo                 50 монет/10 шт```",
+              "💊 Реанимнабор                      50 монет/шт\n"
+              "💉 Набор самореанимации              50 монет/шт\n"
+              "🛡️ Ремкоплект для брони             10 монет/шт\n"
+              "🔫 MG Ammo                            5 монет/100 шт\n"
+              "🎯 Sniper Ammo                       50 монет/10 шт\n"
+              "⚡ Максимальный ур. выносливости    300 монет/шт```\n"
+              "⚡ Максимальный ур. выносливости - ❗ Вы должны быть в игре",
         inline=False
     )
     
@@ -606,6 +625,8 @@ async def slash_shop(interaction: discord.Interaction):
     embed.set_footer(text="by Ilya Vetrov", icon_url=interaction.user.avatar.url if interaction.user.avatar else None)
     
     await interaction.response.send_message(embed=embed, view=view)
+
+# ==================== ОСТАЛЬНЫЕ СЛЭШ-КОМАНДЫ ====================
 
 @bot.tree.command(name="баланс", description="💰 Проверить баланс")
 async def slash_balance(interaction: discord.Interaction, пользователь: discord.Member = None):
@@ -772,7 +793,10 @@ async def slash_commands(interaction: discord.Interaction):
             ("!статистика", "📊 Статистика магазина"),
             ("!админы", "👑 Список админов"),
             ("!добавить_админа @user", "➕ Добавить админа (главный)"),
-            ("!удалить_админа @user", "➖ Удалить админа (главный)")
+            ("!удалить_админа @user", "➖ Удалить админа (главный)"),
+            ("!объявление текст", "📢 Отправить объявление"),
+            ("!объявление_срочное текст", "🚨 Срочное объявление"),
+            ("!объявление_embed цвет заголовок текст", "🎨 Красивое объявление")
         ]
         
         for cmd, desc in admin_commands:
@@ -788,7 +812,6 @@ async def slash_commands(interaction: discord.Interaction):
 
 @bot.command(name='датьмонет')
 async def give_money_command(ctx, member: discord.Member, amount: int):
-    """Выдать монеты пользователю"""
     if not is_admin(ctx.author.id):
         await ctx.send("❌ Только администраторы!")
         return
@@ -814,7 +837,6 @@ async def give_money_command(ctx, member: discord.Member, amount: int):
     data[user_id]["name"] = member.name
     save_data(data)
     
-    # Уведомление в канал
     embed = discord.Embed(
         title="💰 МОНЕТЫ ВЫДАНЫ",
         color=0x2ecc71,
@@ -829,7 +851,6 @@ async def give_money_command(ctx, member: discord.Member, amount: int):
     
     await ctx.send(embed=embed)
     
-    # ЛИЧНОЕ УВЕДОМЛЕНИЕ ПОЛЬЗОВАТЕЛЮ
     try:
         dm_embed = discord.Embed(
             title="💰 ВАМ НАЧИСЛЕНЫ МОНЕТЫ!",
@@ -848,10 +869,8 @@ async def give_money_command(ctx, member: discord.Member, amount: int):
         dm_embed.set_footer(text="by Ilya Vetrov")
         
         await member.send(embed=dm_embed)
-    except discord.Forbidden:
-        await ctx.send(f"⚠️ Не удалось отправить уведомление {member.mention} (закрыты личные сообщения)")
-    except Exception as e:
-        print(f"Ошибка отправки ЛС: {e}")
+    except:
+        pass
 
 @bot.command(name='невыдано')
 async def pending_command(ctx):
@@ -947,7 +966,6 @@ async def deliver_command(ctx, member: discord.Member = None):
                 embed.set_footer(text="by Ilya Vetrov")
                 await ctx.send(embed=embed)
                 
-                # Уведомление пользователю
                 try:
                     user_embed = discord.Embed(
                         title="✅ ТОВАРЫ ВЫДАНЫ!",
@@ -1041,6 +1059,109 @@ async def sync_command(ctx):
     await bot.tree.sync()
     await ctx.send("✅ Слэш-команды синхронизированы!")
 
+@bot.command(name='добавить_админа')
+async def add_admin_command(ctx, user: discord.User):
+    if ctx.author.id != MAIN_ADMIN_ID:
+        await ctx.send("❌ Только главный администратор может добавлять новых админов!")
+        return
+    
+    if user.bot:
+        await ctx.send("❌ Боты не могут быть администраторами!")
+        return
+    
+    if user.id in ADMIN_IDS:
+        await ctx.send(f"❌ Пользователь {user.mention} уже является администратором!")
+        return
+    
+    ADMIN_IDS.append(user.id)
+    save_admins()
+    
+    embed = discord.Embed(
+        title="👑 НОВЫЙ АДМИНИСТРАТОР",
+        description=f"Главный админ **{ctx.author.name}** добавил нового администратора!",
+        color=0xf1c40f,
+        timestamp=datetime.now()
+    )
+    embed.add_field(name="Новый админ", value=user.mention, inline=True)
+    embed.add_field(name="ID", value=f"`{user.id}`", inline=True)
+    embed.set_thumbnail(url=user.avatar.url if user.avatar else None)
+    embed.set_footer(text="by Ilya Vetrov")
+    
+    await ctx.send(embed=embed)
+    
+    try:
+        dm_embed = discord.Embed(
+            title="👑 ВАС НАЗНАЧИЛИ АДМИНИСТРОМ!",
+            description=f"Главный администратор **{ctx.author.name}** добавил вас в список администраторов бота.",
+            color=0xf1c40f
+        )
+        dm_embed.add_field(name="Ваши новые возможности", 
+                          value="• Выдавать монеты (`!датьмонет`)\n"
+                                "• Смотреть список невыданного (`!невыдано`)\n"
+                                "• Отмечать предметы как выданные (`!выдано`)\n"
+                                "• Смотреть статистику (`!статистика`)", 
+                          inline=False)
+        dm_embed.set_footer(text="by Ilya Vetrov")
+        
+        await user.send(embed=dm_embed)
+    except:
+        pass
+
+@bot.command(name='удалить_админа')
+async def remove_admin_command(ctx, user: discord.User):
+    if ctx.author.id != MAIN_ADMIN_ID:
+        await ctx.send("❌ Только главный администратор может удалять админов!")
+        return
+    
+    if user.id == MAIN_ADMIN_ID:
+        await ctx.send("❌ Нельзя удалить главного администратора!")
+        return
+    
+    if user.id not in ADMIN_IDS:
+        await ctx.send(f"❌ Пользователь {user.mention} не является администратором!")
+        return
+    
+    ADMIN_IDS.remove(user.id)
+    save_admins()
+    
+    embed = discord.Embed(
+        title="👑 АДМИНИСТРАТОР УДАЛЕН",
+        description=f"Главный админ **{ctx.author.name}** удалил администратора",
+        color=0xe74c3c,
+        timestamp=datetime.now()
+    )
+    embed.add_field(name="Бывший админ", value=user.mention, inline=True)
+    embed.add_field(name="ID", value=f"`{user.id}`", inline=True)
+    embed.set_footer(text="by Ilya Vetrov")
+    
+    await ctx.send(embed=embed)
+
+@bot.command(name='список_админов')
+async def list_admins_command(ctx):
+    admin_list = []
+    for admin_id in ADMIN_IDS:
+        try:
+            user = await bot.fetch_user(admin_id)
+            if admin_id == MAIN_ADMIN_ID:
+                admin_list.append(f"👑 **{user.name}** (Главный админ)")
+            else:
+                admin_list.append(f"• {user.name}")
+        except:
+            if admin_id == MAIN_ADMIN_ID:
+                admin_list.append(f"👑 Админ (ID: {admin_id}) - Главный")
+            else:
+                admin_list.append(f"• Админ (ID: {admin_id})")
+    
+    embed = discord.Embed(
+        title="👑 СПИСОК АДМИНИСТРАТОРОВ",
+        description="\n".join(admin_list),
+        color=0xf1c40f,
+        timestamp=datetime.now()
+    )
+    embed.set_footer(text=f"Всего админов: {len(ADMIN_IDS)} | by Ilya Vetrov")
+    
+    await ctx.send(embed=embed)
+
 # ==================== СОБЫТИЯ ====================
 
 @bot.event
@@ -1051,7 +1172,6 @@ async def on_ready():
     print(f'📋 На серверах: {len(bot.guilds)}')
     print(f'👑 Админов: {len(ADMIN_IDS)}')
     
-    # Статистика при запуске
     data = load_data()
     users = len(data)
     total_balance = sum(user.get("balance", 0) for user in data.values())
