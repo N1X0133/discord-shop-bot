@@ -4,7 +4,6 @@ from discord import app_commands
 from discord.ui import Select, View, Button, Modal, TextInput
 import json
 import os
-import shutil
 from datetime import datetime
 
 # Настройки бота
@@ -45,7 +44,7 @@ SHOP_CHANNEL_ID = 1481753891124019302      # Магазин
 ADMIN_CHANNEL_ID = 1481754087614841033     # Админский
 ANNOUNCE_CHANNEL_ID = 1483097607424446514  # Канал для объявлений
 
-# ID пользователей для уведомлений о выдаче товаров (теперь в админский канал)
+# ID пользователей для уведомлений о выдаче товаров
 NOTIFY_USER_IDS = [
     271067502102970371,   # Первый пользователь для уведомлений
     1048236913447940106,  # Второй пользователь для уведомлений
@@ -118,6 +117,10 @@ def is_admin(user_id):
 def is_main_admin(user_id):
     return user_id == MAIN_ADMIN_ID
 
+def can_confirm_delivery(user_id):
+    """Проверяет, может ли пользователь подтверждать выдачу"""
+    return user_id in NOTIFY_USER_IDS or user_id == MAIN_ADMIN_ID
+
 def is_allowed_channel(channel_id, command_type):
     if channel_id == ADMIN_CHANNEL_ID:
         return True
@@ -125,109 +128,10 @@ def is_allowed_channel(channel_id, command_type):
         return channel_id == BALANCE_CHANNEL_ID
     return channel_id == SHOP_CHANNEL_ID
 
-# ==================== НОВАЯ КОМАНДА ДЛЯ ОБЪЯВЛЕНИЙ ====================
-
-@bot.command(name='объявление')
-async def announcement_command(ctx, *, текст: str):
-    """📢 Отправить объявление в канал новостей (только для админов)"""
-    
-    if not is_admin(ctx.author.id):
-        await ctx.send("❌ Только администраторы могут использовать эту команду!")
-        return
-    
-    announce_channel = bot.get_channel(ANNOUNCE_CHANNEL_ID)
-    if not announce_channel:
-        await ctx.send(f"❌ Канал <#{ANNOUNCE_CHANNEL_ID}> не найден!")
-        return
-    
-    embed = discord.Embed(
-        title="📢 ОБЪЯВЛЕНИЕ АДМИНИСТРАЦИИ",
-        description=текст,
-        color=0x9b59b6,
-        timestamp=datetime.now()
-    )
-    embed.set_author(
-        name=ctx.author.name, 
-        icon_url=ctx.author.avatar.url if ctx.author.avatar else None
-    )
-    embed.set_footer(text="by Ilya Vetrov")
-    
-    await announce_channel.send(embed=embed)
-    await ctx.send(f"✅ Объявление отправлено в канал <#{ANNOUNCE_CHANNEL_ID}>")
-
-@bot.command(name='объявление_срочное')
-async def announcement_urgent_command(ctx, *, текст: str):
-    """🚨 Отправить срочное объявление (только для админов)"""
-    
-    if not is_admin(ctx.author.id):
-        await ctx.send("❌ Только администраторы могут использовать эту команду!")
-        return
-    
-    announce_channel = bot.get_channel(ANNOUNCE_CHANNEL_ID)
-    if not announce_channel:
-        await ctx.send(f"❌ Канал <#{ANNOUNCE_CHANNEL_ID}> не найден!")
-        return
-    
-    embed = discord.Embed(
-        title="🚨 СРОЧНОЕ ОБЪЯВЛЕНИЕ",
-        description=текст,
-        color=0xe74c3c,
-        timestamp=datetime.now()
-    )
-    embed.set_author(
-        name=ctx.author.name, 
-        icon_url=ctx.author.avatar.url if ctx.author.avatar else None
-    )
-    embed.set_footer(text="by Ilya Vetrov")
-    
-    await announce_channel.send("@everyone", embed=embed)
-    await ctx.send(f"✅ Срочное объявление отправлено в канал <#{ANNOUNCE_CHANNEL_ID}>")
-
-@bot.command(name='объявление_embed')
-async def announcement_embed_command(ctx, цвет: str, заголовок: str, *, текст: str):
-    """🎨 Отправить объявление с выбором цвета (только для админов)"""
-    
-    if not is_admin(ctx.author.id):
-        await ctx.send("❌ Только администраторы могут использовать эту команду!")
-        return
-    
-    color_map = {
-        "красный": 0xe74c3c,
-        "зеленый": 0x2ecc71,
-        "синий": 0x3498db,
-        "желтый": 0xf1c40f,
-        "фиолетовый": 0x9b59b6,
-        "оранжевый": 0xe67e22,
-        "розовый": 0xe91e63,
-        "голубой": 0x00ffff
-    }
-    
-    color = color_map.get(цвет.lower(), 0x3498db)
-    
-    announce_channel = bot.get_channel(ANNOUNCE_CHANNEL_ID)
-    if not announce_channel:
-        await ctx.send(f"❌ Канал <#{ANNOUNCE_CHANNEL_ID}> не найден!")
-        return
-    
-    embed = discord.Embed(
-        title=заголовок,
-        description=текст,
-        color=color,
-        timestamp=datetime.now()
-    )
-    embed.set_author(
-        name=ctx.author.name, 
-        icon_url=ctx.author.avatar.url if ctx.author.avatar else None
-    )
-    embed.set_footer(text="by Ilya Vetrov")
-    
-    await announce_channel.send(embed=embed)
-    await ctx.send(f"✅ Объявление отправлено в канал <#{ANNOUNCE_CHANNEL_ID}>")
-
 # ==================== КНОПКИ ВЫДАЧИ ====================
 
 class DeliveryView(View):
-    def __init__(self, user_id, item_name, quantity, nickname, cid, purchase_id):
+    def __init__(self, user_id, item_name, quantity, nickname, cid, purchase_id, total_price):
         super().__init__(timeout=None)
         self.user_id = user_id
         self.item_name = item_name
@@ -235,36 +139,36 @@ class DeliveryView(View):
         self.nickname = nickname
         self.cid = cid
         self.purchase_id = purchase_id
+        self.total_price = total_price
+        self.requested = False
     
     async def notify_users_in_admin_channel(self, interaction: discord.Interaction, buyer_user: discord.User):
-        """Отправляет уведомление двум пользователям в админский канал"""
+        """Отправляет уведомление двум пользователям в админский канал с кнопкой выдачи"""
         
         admin_channel = bot.get_channel(ADMIN_CHANNEL_ID)
         if not admin_channel:
             print(f"❌ Админский канал {ADMIN_CHANNEL_ID} не найден!")
             return
         
-        # Создаем embed для уведомления
         embed = discord.Embed(
-            title="📦 ТРЕБУЕТСЯ ВЫДАЧА ТОВАРА!",
-            description=f"**{interaction.user.name}** выдал товар, теперь нужно выдать товар тому кто выдал",
+            title="❓ ЗАПРОС НА ВЫДАЧУ ТОВАРА!",
+            description=f"**{interaction.user.name}** запросил выдачу товара. Требуется подтверждение.",
             color=0xe74c3c,
             timestamp=datetime.now()
         )
-        embed.add_field(name="👤 Кто выдал товар", value=f"```{interaction.user.name}```", inline=True)
-        embed.add_field(name="👤 Кому выдали", value=f"```{buyer_user.name} (ID: {buyer_user.id})```", inline=True)
+        embed.add_field(name="👤 Кто запросил", value=f"```{interaction.user.name}```", inline=True)
+        embed.add_field(name="👤 Кому выдать", value=f"```{buyer_user.name} (ID: {buyer_user.id})```", inline=True)
         embed.add_field(name="📦 Товар", value=f"```{self.item_name}```", inline=True)
         embed.add_field(name="🔢 Количество", value=f"```{self.quantity} шт.```", inline=True)
+        embed.add_field(name="💰 Сумма", value=f"```{self.total_price} монет```", inline=True)
         embed.add_field(name="👤 Никнейм", value=f"```{self.nickname}```", inline=True)
         embed.add_field(name="🆔 CID", value=f"```{self.cid}```", inline=True)
-        embed.set_footer(text="Нажмите на кнопку чтобы отметить выдачу")
+        embed.set_footer(text="Нажмите на кнопку чтобы подтвердить выдачу")
         
-        # Создаем кнопку "Выдать товар тому кто выдал"
-        view = ReturnDeliveryView(interaction.user.id, buyer_user.id, self.item_name, self.quantity, self.nickname, self.cid)
+        view = ConfirmDeliveryView(self.user_id, buyer_user.id, self.item_name, self.quantity, self.nickname, self.cid, self.purchase_id, self.total_price)
         
-        # Отправляем уведомление в админский канал
         await admin_channel.send(f"<@{NOTIFY_USER_IDS[0]}> <@{NOTIFY_USER_IDS[1]}>", embed=embed, view=view)
-        print(f"✅ Уведомление отправлено в админский канал")
+        print(f"✅ Запрос на выдачу отправлен в админский канал")
     
     @discord.ui.button(label="✅ Выдать", style=discord.ButtonStyle.green, emoji="✅")
     async def deliver_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -297,14 +201,12 @@ class DeliveryView(View):
             
             save_data(data)
             
-            # Получаем пользователя-покупателя
             buyer_user = None
             try:
                 buyer_user = await bot.fetch_user(int(user_id))
             except:
                 pass
             
-            # Отправляем уведомление покупателю
             if buyer_user:
                 try:
                     user_embed = discord.Embed(
@@ -322,36 +224,12 @@ class DeliveryView(View):
                 except:
                     pass
             
-            # Отправляем уведомление двум пользователям в админский канал
-            if buyer_user:
-                await self.notify_users_in_admin_channel(interaction, buyer_user)
-            else:
-                # Если не удалось получить пользователя, отправляем без упоминания покупателя
-                admin_channel = bot.get_channel(ADMIN_CHANNEL_ID)
-                if admin_channel:
-                    embed = discord.Embed(
-                        title="📦 ТРЕБУЕТСЯ ВЫДАЧА ТОВАРА!",
-                        description=f"**{interaction.user.name}** выдал товар, теперь нужно выдать товар тому кто выдал",
-                        color=0xe74c3c,
-                        timestamp=datetime.now()
-                    )
-                    embed.add_field(name="👤 Кто выдал товар", value=f"```{interaction.user.name}```", inline=True)
-                    embed.add_field(name="👤 ID покупателя", value=f"```{self.user_id}```", inline=True)
-                    embed.add_field(name="📦 Товар", value=f"```{self.item_name}```", inline=True)
-                    embed.add_field(name="🔢 Количество", value=f"```{self.quantity} шт.```", inline=True)
-                    embed.add_field(name="👤 Никнейм", value=f"```{self.nickname}```", inline=True)
-                    embed.add_field(name="🆔 CID", value=f"```{self.cid}```", inline=True)
-                    embed.set_footer(text="Нажмите на кнопку чтобы отметить выдачу")
-                    
-                    view = ReturnDeliveryView(interaction.user.id, None, self.item_name, self.quantity, self.nickname, self.cid)
-                    await admin_channel.send(f"<@{NOTIFY_USER_IDS[0]}> <@{NOTIFY_USER_IDS[1]}>", embed=embed, view=view)
-            
             embed = interaction.message.embeds[0]
             embed.color = discord.Color.green()
             embed.add_field(name="Статус", value="✅ ВЫДАНО", inline=False)
             
             await interaction.message.edit(embed=embed, view=None)
-            await interaction.response.send_message("✅ Товар отмечен как выданный! Уведомление отправлено в админский канал.", ephemeral=True)
+            await interaction.response.send_message("✅ Товар отмечен как выданный!", ephemeral=True)
     
     @discord.ui.button(label="❌ Не выдавать", style=discord.ButtonStyle.red, emoji="❌")
     async def not_deliver_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -359,65 +237,429 @@ class DeliveryView(View):
             await interaction.response.send_message("❌ Только администраторы!", ephemeral=True)
             return
         
+        data = load_data()
+        user_id = str(self.user_id)
+        
+        # Возвращаем монеты пользователю
+        if user_id in data:
+            for item in data[user_id].get("pending_items", []):
+                if (item.get("name") == self.item_name and 
+                    item.get("nickname") == self.nickname and 
+                    not item.get("delivered")):
+                    # Возвращаем монеты
+                    data[user_id]["balance"] += self.total_price
+                    # Помечаем как отказано
+                    item["delivered"] = True
+                    item["cancelled"] = True
+                    break
+            
+            save_data(data)
+            
+            # Уведомляем пользователя о возврате монет
+            try:
+                user = await bot.fetch_user(int(user_id))
+                if user:
+                    refund_embed = discord.Embed(
+                        title="💰 ВОЗВРАТ МОНЕТ",
+                        description=f"Ваш заказ на **{self.item_name}** был отменен администратором.",
+                        color=0xf1c40f,
+                        timestamp=datetime.now()
+                    )
+                    refund_embed.add_field(name="Возвращено", value=f"```+{self.total_price} монет```", inline=True)
+                    refund_embed.add_field(name="Причина", value="```Отказ в выдаче товара```", inline=True)
+                    refund_embed.set_footer(text="by Ilya Vetrov")
+                    await user.send(embed=refund_embed)
+            except:
+                pass
+        
         embed = interaction.message.embeds[0]
         embed.color = discord.Color.red()
-        embed.add_field(name="Статус", value="❌ ОТКАЗАНО", inline=False)
+        embed.add_field(name="Статус", value="❌ ОТКАЗАНО (монеты возвращены)", inline=False)
         
         await interaction.message.edit(embed=embed, view=None)
-        await interaction.response.send_message("❌ Товар отмечен как отказанный", ephemeral=True)
-
-# ==================== КНОПКИ ДЛЯ ВЫДАЧИ ТОВАРА ТОМУ КТО ВЫДАЛ ====================
-
-class ReturnDeliveryView(View):
-    def __init__(self, admin_id, buyer_id, item_name, quantity, nickname, cid):
-        super().__init__(timeout=None)
-        self.admin_id = admin_id
-        self.buyer_id = buyer_id
-        self.item_name = item_name
-        self.quantity = quantity
-        self.nickname = nickname
-        self.cid = cid
+        await interaction.response.send_message("❌ Товар отмечен как отказанный. Монеты возвращены пользователю!", ephemeral=True)
     
-    @discord.ui.button(label="✅ Выдать товар тому кто выдал", style=discord.ButtonStyle.green, emoji="✅")
-    async def return_deliver_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(label="❓ Запросить", style=discord.ButtonStyle.blurple, emoji="❓")
+    async def request_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not is_admin(interaction.user.id):
             await interaction.response.send_message("❌ Только администраторы!", ephemeral=True)
             return
         
-        # Проверяем, что нажал один из двух указанных пользователей
-        if interaction.user.id not in NOTIFY_USER_IDS:
-            await interaction.response.send_message("❌ Только指定的 пользователи могут отмечать выдачу!", ephemeral=True)
+        if self.requested:
+            await interaction.response.send_message("❌ Запрос уже был отправлен!", ephemeral=True)
             return
         
-        # Отправляем уведомление администратору, который выдал товар
+        self.requested = True
+        
+        buyer_user = None
         try:
-            admin_user = await bot.fetch_user(self.admin_id)
-            if admin_user:
-                embed = discord.Embed(
-                    title="✅ ВАМ ВЫДАН ТОВАР!",
-                    description=f"Вам выдан товар за выдачу товара покупателю",
-                    color=0x2ecc71,
-                    timestamp=datetime.now()
-                )
-                embed.add_field(name="📦 Товар", value=f"```{self.item_name}```", inline=True)
-                embed.add_field(name="🔢 Количество", value=f"```{self.quantity} шт.```", inline=True)
-                embed.add_field(name="👤 Выдал", value=f"```{interaction.user.name}```", inline=True)
-                embed.add_field(name="👤 Никнейм покупателя", value=f"```{self.nickname}```", inline=True)
-                embed.add_field(name="🆔 CID покупателя", value=f"```{self.cid}```", inline=True)
-                embed.set_footer(text="by Ilya Vetrov")
-                await admin_user.send(embed=embed)
+            buyer_user = await bot.fetch_user(int(self.user_id))
         except:
             pass
         
-        # Обновляем сообщение в админском канале
+        if buyer_user:
+            await self.notify_users_in_admin_channel(interaction, buyer_user)
+        else:
+            admin_channel = bot.get_channel(ADMIN_CHANNEL_ID)
+            if admin_channel:
+                embed = discord.Embed(
+                    title="❓ ЗАПРОС НА ВЫДАЧУ ТОВАРА!",
+                    description=f"**{interaction.user.name}** запросил выдачу товара. Требуется подтверждение.",
+                    color=0xe74c3c,
+                    timestamp=datetime.now()
+                )
+                embed.add_field(name="👤 Кто запросил", value=f"```{interaction.user.name}```", inline=True)
+                embed.add_field(name="👤 ID покупателя", value=f"```{self.user_id}```", inline=True)
+                embed.add_field(name="📦 Товар", value=f"```{self.item_name}```", inline=True)
+                embed.add_field(name="🔢 Количество", value=f"```{self.quantity} шт.```", inline=True)
+                embed.add_field(name="💰 Сумма", value=f"```{self.total_price} монет```", inline=True)
+                embed.add_field(name="👤 Никнейм", value=f"```{self.nickname}```", inline=True)
+                embed.add_field(name="🆔 CID", value=f"```{self.cid}```", inline=True)
+                embed.set_footer(text="Нажмите на кнопку чтобы подтвердить выдачу")
+                
+                view = ConfirmDeliveryView(self.user_id, None, self.item_name, self.quantity, self.nickname, self.cid, self.purchase_id, self.total_price)
+                await admin_channel.send(f"<@{NOTIFY_USER_IDS[0]}> <@{NOTIFY_USER_IDS[1]}>", embed=embed, view=view)
+        
         embed = interaction.message.embeds[0]
-        embed.color = discord.Color.green()
-        embed.title = "✅ ТОВАР ВЫДАН ТОМУ КТО ВЫДАЛ!"
-        embed.description = f"**{interaction.user.name}** отметил выдачу товара администратору"
-        embed.set_footer(text="Выдача подтверждена")
+        embed.color = discord.Color.blurple()
+        embed.add_field(name="Статус", value="❓ ЗАПРОС ОТПРАВЛЕН", inline=False)
+        
+        new_view = DeliveryViewAfterRequest(self.user_id, self.item_name, self.quantity, self.nickname, self.cid, self.purchase_id, self.total_price)
+        await interaction.message.edit(embed=embed, view=new_view)
+        
+        await interaction.response.send_message("✅ Запрос на выдачу отправлен указанным пользователям!", ephemeral=True)
+
+# ==================== КНОПКИ ПОСЛЕ ЗАПРОСА ====================
+
+class DeliveryViewAfterRequest(View):
+    def __init__(self, user_id, item_name, quantity, nickname, cid, purchase_id, total_price):
+        super().__init__(timeout=None)
+        self.user_id = user_id
+        self.item_name = item_name
+        self.quantity = quantity
+        self.nickname = nickname
+        self.cid = cid
+        self.purchase_id = purchase_id
+        self.total_price = total_price
+    
+    @discord.ui.button(label="✅ Выдать", style=discord.ButtonStyle.green, emoji="✅")
+    async def deliver_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_admin(interaction.user.id):
+            await interaction.response.send_message("❌ Только администраторы!", ephemeral=True)
+            return
+        
+        data = load_data()
+        user_id = str(self.user_id)
+        
+        if user_id in data:
+            for item in data[user_id].get("pending_items", []):
+                if (item.get("name") == self.item_name and 
+                    item.get("nickname") == self.nickname and 
+                    not item.get("delivered")):
+                    item["delivered"] = True
+                    
+                    if "inventory" not in data[user_id]:
+                        data[user_id]["inventory"] = []
+                    
+                    for i in range(self.quantity):
+                        data[user_id]["inventory"].append({
+                            "name": self.item_name,
+                            "received_date": datetime.now().strftime("%d.%m.%Y %H:%M"),
+                            "received_by": interaction.user.name,
+                            "nickname": self.nickname,
+                            "cid": self.cid
+                        })
+                    break
+            
+            save_data(data)
+            
+            buyer_user = None
+            try:
+                buyer_user = await bot.fetch_user(int(user_id))
+            except:
+                pass
+            
+            if buyer_user:
+                try:
+                    user_embed = discord.Embed(
+                        title="✅ ТОВАР ВЫДАН!",
+                        description=f"Вам выдан товар: **{self.item_name}**",
+                        color=0x2ecc71,
+                        timestamp=datetime.now()
+                    )
+                    user_embed.add_field(name="Количество", value=f"```{self.quantity} шт.```", inline=True)
+                    user_embed.add_field(name="Выдал", value=f"```{interaction.user.name}```", inline=True)
+                    user_embed.add_field(name="Никнейм", value=f"```{self.nickname}```", inline=True)
+                    user_embed.add_field(name="CID", value=f"```{self.cid}```", inline=True)
+                    user_embed.set_footer(text="by Ilya Vetrov")
+                    await buyer_user.send(embed=user_embed)
+                except:
+                    pass
+            
+            embed = interaction.message.embeds[0]
+            embed.color = discord.Color.green()
+            embed.add_field(name="Статус", value="✅ ВЫДАНО", inline=False)
+            
+            await interaction.message.edit(embed=embed, view=None)
+            await interaction.response.send_message("✅ Товар отмечен как выданный!", ephemeral=True)
+    
+    @discord.ui.button(label="❌ Не выдавать", style=discord.ButtonStyle.red, emoji="❌")
+    async def not_deliver_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_admin(interaction.user.id):
+            await interaction.response.send_message("❌ Только администраторы!", ephemeral=True)
+            return
+        
+        data = load_data()
+        user_id = str(self.user_id)
+        
+        # Возвращаем монеты пользователю
+        if user_id in data:
+            for item in data[user_id].get("pending_items", []):
+                if (item.get("name") == self.item_name and 
+                    item.get("nickname") == self.nickname and 
+                    not item.get("delivered")):
+                    # Возвращаем монеты
+                    data[user_id]["balance"] += self.total_price
+                    # Помечаем как отказано
+                    item["delivered"] = True
+                    item["cancelled"] = True
+                    break
+            
+            save_data(data)
+            
+            # Уведомляем пользователя о возврате монет
+            try:
+                user = await bot.fetch_user(int(user_id))
+                if user:
+                    refund_embed = discord.Embed(
+                        title="💰 ВОЗВРАТ МОНЕТ",
+                        description=f"Ваш заказ на **{self.item_name}** был отменен администратором.",
+                        color=0xf1c40f,
+                        timestamp=datetime.now()
+                    )
+                    refund_embed.add_field(name="Возвращено", value=f"```+{self.total_price} монет```", inline=True)
+                    refund_embed.add_field(name="Причина", value="```Отказ в выдаче товара```", inline=True)
+                    refund_embed.set_footer(text="by Ilya Vetrov")
+                    await user.send(embed=refund_embed)
+            except:
+                pass
+        
+        embed = interaction.message.embeds[0]
+        embed.color = discord.Color.red()
+        embed.add_field(name="Статус", value="❌ ОТКАЗАНО (монеты возвращены)", inline=False)
         
         await interaction.message.edit(embed=embed, view=None)
-        await interaction.response.send_message("✅ Товар тому кто выдал отмечен как выданный!", ephemeral=True)
+        await interaction.response.send_message("❌ Товар отмечен как отказанный. Монеты возвращены пользователю!", ephemeral=True)
+
+# ==================== КНОПКИ ДЛЯ ПОДТВЕРЖДЕНИЯ ВЫДАЧИ ====================
+
+class ConfirmDeliveryView(View):
+    def __init__(self, buyer_id, admin_id, item_name, quantity, nickname, cid, purchase_id, total_price):
+        super().__init__(timeout=None)
+        self.buyer_id = buyer_id
+        self.admin_id = admin_id
+        self.item_name = item_name
+        self.quantity = quantity
+        self.nickname = nickname
+        self.cid = cid
+        self.purchase_id = purchase_id
+        self.total_price = total_price
+    
+    @discord.ui.button(label="✅ Подтвердить выдачу", style=discord.ButtonStyle.green, emoji="✅")
+    async def confirm_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Проверяем, может ли пользователь подтверждать выдачу (указанные пользователи или главный админ)
+        if not can_confirm_delivery(interaction.user.id):
+            await interaction.response.send_message("❌ Только указанные пользователи и главный администратор могут подтверждать выдачу!", ephemeral=True)
+            return
+        
+        data = load_data()
+        user_id = str(self.buyer_id)
+        
+        if user_id in data:
+            for item in data[user_id].get("pending_items", []):
+                if (item.get("name") == self.item_name and 
+                    item.get("nickname") == self.nickname and 
+                    not item.get("delivered")):
+                    item["delivered"] = True
+                    
+                    if "inventory" not in data[user_id]:
+                        data[user_id]["inventory"] = []
+                    
+                    for i in range(self.quantity):
+                        data[user_id]["inventory"].append({
+                            "name": self.item_name,
+                            "received_date": datetime.now().strftime("%d.%m.%Y %H:%M"),
+                            "received_by": interaction.user.name,
+                            "nickname": self.nickname,
+                            "cid": self.cid
+                        })
+                    break
+            
+            save_data(data)
+        
+        if self.admin_id:
+            try:
+                admin_user = await bot.fetch_user(self.admin_id)
+                if admin_user:
+                    admin_embed = discord.Embed(
+                        title="✅ ВЫДАЧА ПОДТВЕРЖДЕНА!",
+                        description=f"**{interaction.user.name}** подтвердил выдачу товара",
+                        color=0x2ecc71,
+                        timestamp=datetime.now()
+                    )
+                    admin_embed.add_field(name="📦 Товар", value=f"```{self.item_name}```", inline=True)
+                    admin_embed.add_field(name="🔢 Количество", value=f"```{self.quantity} шт.```", inline=True)
+                    admin_embed.add_field(name="👤 Никнейм", value=f"```{self.nickname}```", inline=True)
+                    admin_embed.add_field(name="🆔 CID", value=f"```{self.cid}```", inline=True)
+                    admin_embed.set_footer(text="by Ilya Vetrov")
+                    await admin_user.send(embed=admin_embed)
+            except:
+                pass
+        
+        try:
+            buyer_user = await bot.fetch_user(self.buyer_id)
+            if buyer_user:
+                buyer_embed = discord.Embed(
+                    title="✅ ТОВАР ВЫДАН!",
+                    description=f"Вам выдан товар: **{self.item_name}**",
+                    color=0x2ecc71,
+                    timestamp=datetime.now()
+                )
+                buyer_embed.add_field(name="Количество", value=f"```{self.quantity} шт.```", inline=True)
+                buyer_embed.add_field(name="Подтвердил", value=f"```{interaction.user.name}```", inline=True)
+                buyer_embed.add_field(name="Никнейм", value=f"```{self.nickname}```", inline=True)
+                buyer_embed.add_field(name="CID", value=f"```{self.cid}```", inline=True)
+                buyer_embed.set_footer(text="by Ilya Vetrov")
+                await buyer_user.send(embed=buyer_embed)
+        except:
+            pass
+        
+        embed = interaction.message.embeds[0]
+        embed.color = discord.Color.green()
+        embed.title = "✅ ВЫДАЧА ПОДТВЕРЖДЕНА!"
+        embed.description = f"**{interaction.user.name}** подтвердил выдачу товара"
+        embed.set_footer(text="Товар выдан")
+        
+        await interaction.message.edit(embed=embed, view=None)
+        await interaction.response.send_message("✅ Выдача товара подтверждена!", ephemeral=True)
+
+# ==================== НОВАЯ КОМАНДА ДЛЯ СБРОСА ОЖИДАНИЯ ВЫДАЧИ ====================
+
+@bot.command(name='сбросить_выдачу')
+async def reset_pending_command(ctx, member: discord.Member, *, товар: str = None):
+    """🔄 Сбросить статус ожидания выдачи для пользователя (только для админов)"""
+    
+    if not is_admin(ctx.author.id):
+        await ctx.send("❌ Только администраторы могут использовать эту команду!")
+        return
+    
+    data = load_data()
+    user_id = str(member.id)
+    
+    if user_id not in data:
+        await ctx.send(f"❌ Пользователь {member.mention} не найден в базе данных!")
+        return
+    
+    pending_items = [item for item in data[user_id].get("pending_items", []) if not item.get("delivered")]
+    
+    if not pending_items:
+        await ctx.send(f"📦 У {member.mention} нет предметов в ожидании выдачи!")
+        return
+    
+    if товар:
+        # Сбрасываем конкретный товар
+        found = False
+        for item in data[user_id]["pending_items"]:
+            if not item.get("delivered") and товар.lower() in item.get("name", "").lower():
+                # Возвращаем монеты если товар не был выдан
+                if not item.get("cancelled"):
+                    data[user_id]["balance"] += item.get("total", 0)
+                item["delivered"] = True
+                item["cancelled"] = True
+                found = True
+                break
+        
+        if found:
+            save_data(data)
+            await ctx.send(f"✅ Сброшен статус ожидания для товара **{товар}** у {member.mention}. Монеты возвращены!")
+        else:
+            await ctx.send(f"❌ Не найден товар '{товар}' в ожидании выдачи у {member.mention}")
+    else:
+        # Сбрасываем все ожидающие выдачи товары
+        total_refund = 0
+        count = 0
+        for item in data[user_id]["pending_items"]:
+            if not item.get("delivered"):
+                if not item.get("cancelled"):
+                    data[user_id]["balance"] += item.get("total", 0)
+                    total_refund += item.get("total", 0)
+                item["delivered"] = True
+                item["cancelled"] = True
+                count += 1
+        
+        if count > 0:
+            save_data(data)
+            embed = discord.Embed(
+                title="🔄 СБРОС ОЖИДАНИЯ ВЫДАЧИ",
+                description=f"Сброшено **{count}** позиций в ожидании выдачи для {member.mention}",
+                color=0xf1c40f,
+                timestamp=datetime.now()
+            )
+            embed.add_field(name="Возвращено монет", value=f"```{total_refund} монет```", inline=True)
+            embed.set_footer(text="by Ilya Vetrov")
+            await ctx.send(embed=embed)
+            
+            try:
+                user_embed = discord.Embed(
+                    title="🔄 СБРОС ОЖИДАНИЯ ВЫДАЧИ",
+                    description=f"Администратор **{ctx.author.name}** сбросил статус ожидания выдачи ваших товаров.",
+                    color=0xf1c40f,
+                    timestamp=datetime.now()
+                )
+                user_embed.add_field(name="Сброшено позиций", value=f"```{count} шт.```", inline=True)
+                user_embed.add_field(name="Возвращено монет", value=f"```{total_refund} монет```", inline=True)
+                user_embed.set_footer(text="by Ilya Vetrov")
+                await member.send(embed=user_embed)
+            except:
+                pass
+        else:
+            await ctx.send(f"📦 У {member.mention} нет активных ожиданий выдачи!")
+
+@bot.command(name='сбросить_все_выдачи')
+async def reset_all_pending_command(ctx):
+    """🔄 Сбросить все ожидания выдачи для всех пользователей (только для админов)"""
+    
+    if not is_admin(ctx.author.id):
+        await ctx.send("❌ Только администраторы могут использовать эту команду!")
+        return
+    
+    data = load_data()
+    total_refund = 0
+    total_items = 0
+    
+    for user_id, user_data in data.items():
+        for item in user_data.get("pending_items", []):
+            if not item.get("delivered"):
+                if not item.get("cancelled"):
+                    user_data["balance"] += item.get("total", 0)
+                    total_refund += item.get("total", 0)
+                item["delivered"] = True
+                item["cancelled"] = True
+                total_items += 1
+    
+    if total_items > 0:
+        save_data(data)
+        embed = discord.Embed(
+            title="🔄 СБРОС ВСЕХ ОЖИДАНИЙ ВЫДАЧИ",
+            description=f"Сброшено **{total_items}** позиций в ожидании выдачи для **всех** пользователей",
+            color=0xf1c40f,
+            timestamp=datetime.now()
+        )
+        embed.add_field(name="Всего возвращено монет", value=f"```{total_refund} монет```", inline=True)
+        embed.set_footer(text="by Ilya Vetrov")
+        await ctx.send(embed=embed)
+    else:
+        await ctx.send("📦 Нет активных ожиданий выдачи ни у одного пользователя!")
 
 # ==================== МОДАЛЬНОЕ ОКНО ====================
 
@@ -499,7 +741,8 @@ class PurchaseModal(Modal, title="🛒 Оформление покупки"):
             "date": datetime.now().strftime("%d.%m.%Y %H:%M"),
             "nickname": self.nickname.value,
             "cid": self.cid.value,
-            "delivered": False
+            "delivered": False,
+            "cancelled": False
         }
         
         data[user_id]["pending_items"].append(purchase)
@@ -507,7 +750,6 @@ class PurchaseModal(Modal, title="🛒 Оформление покупки"):
         data[user_id]["name"] = interaction.user.name
         save_data(data)
         
-        # Проверяем, есть ли специальное примечание для этого товара
         special_note = ""
         if self.item_name == "⚡ Максимальный ур. выносливости":
             special_note = "\n❗ Вы должны быть в игре чтобы товар был выдан"
@@ -543,7 +785,8 @@ class PurchaseModal(Modal, title="🛒 Оформление покупки"):
             admin_embed.add_field(name="👤 Покупатель", value=f"```{interaction.user.name} ({interaction.user.id})```", inline=False)
             admin_embed.add_field(name="📦 Товар", value=f"```{self.item_name}```", inline=True)
             admin_embed.add_field(name="🔢 Количество", value=f"```{quantity} шт.```", inline=True)
-            admin_embed.add_field(name="💰 Цена", value=f"```{total_price} монет```", inline=True)
+            admin_embed.add_field(name="💰 Цена за шт", value=f"```{self.item_price} монет```", inline=True)
+            admin_embed.add_field(name="💰 Общая сумма", value=f"```{total_price} монет```", inline=True)
             admin_embed.add_field(name="👤 Никнейм", value=f"```{self.nickname.value}```", inline=True)
             admin_embed.add_field(name="🆔 CID", value=f"```{self.cid.value}```", inline=True)
             admin_embed.add_field(name="📊 Баланс после", value=f"```{data[user_id]['balance']} монет```", inline=False)
@@ -553,7 +796,7 @@ class PurchaseModal(Modal, title="🛒 Оформление покупки"):
             
             admin_embed.set_footer(text="by Ilya Vetrov")
             
-            view = DeliveryView(interaction.user.id, self.item_name, quantity, self.nickname.value, self.cid.value, purchase_id)
+            view = DeliveryView(interaction.user.id, self.item_name, quantity, self.nickname.value, self.cid.value, purchase_id, total_price)
             await admin_channel.send(embed=admin_embed, view=view)
 
 # ==================== КЛАСС МАГАЗИНА ====================
@@ -563,25 +806,18 @@ class ShopView(View):
         super().__init__(timeout=None)
         
         self.shop_items = [
-            # Глава 1: Расходники (Набор самореанимации теперь 50)
             {"name": "💊 Реанимнабор", "price": 50},
-            {"name": "💉 Набор для самореанимации", "price": 50},  # Цена изменена с 100 на 50
+            {"name": "💉 Набор для самореанимации", "price": 50},
             {"name": "🛡️ Ремкоплект для брони", "price": 10},
             {"name": "🔫 MG Ammo", "price": 5, "note": "за 100 шт"},
             {"name": "🎯 Sniper Ammo", "price": 50, "note": "за 10 шт"},
-            
-            # ⚡ НОВЫЙ ТОВАР в Главе 1
             {"name": "⚡ Максимальный ур. выносливости", "price": 300, "note": "❗ Вы должны быть в игре"},
-            
-            # Глава 2: Модули
             {"name": "🔇 Глушитель", "price": 10},
             {"name": "🥁 Барабанный магазин (винтовка)", "price": 200},
             {"name": "📦 Увеличенный магазин (винтовка)", "price": 80},
             {"name": "📦 Увеличенный магазин (пистолет)", "price": 10},
             {"name": "🥁 Барабанный магазин (ПП)", "price": 40},
             {"name": "📦 Увеличенный магазин (снайперская винтовка)", "price": 45},
-            
-            # Глава 3: Спец. вооружение
             {"name": "🔫 Тяжелый пулемет", "price": 65},
             {"name": "⚡ Тяжелый пулемет MK2", "price": 300},
             {"name": "🎯 Тяжелая снайперская", "price": 300},
@@ -746,8 +982,6 @@ async def slash_shop(interaction: discord.Interaction):
     
     await interaction.response.send_message(embed=embed, view=view)
 
-# ==================== ОСТАЛЬНЫЕ СЛЭШ-КОМАНДЫ (без изменений) ====================
-
 @bot.tree.command(name="баланс", description="💰 Проверить баланс")
 async def slash_balance(interaction: discord.Interaction, пользователь: discord.Member = None):
     if not is_allowed_channel(interaction.channel_id, 'balance'):
@@ -858,7 +1092,12 @@ async def slash_history(interaction: discord.Interaction, пользовател
     recent = data[user_id]["all_purchases"][-10:]
     purchases = []
     for p in recent:
-        status = "✅" if p.get("delivered") else "⏳"
+        if p.get("cancelled"):
+            status = "❌"
+        elif p.get("delivered"):
+            status = "✅"
+        else:
+            status = "⏳"
         purchases.append(f"{status} {p['name']} x{p.get('quantity',1)} - {p['date']}")
     
     embed.add_field(name="Последние покупки", value="```\n" + "\n".join(purchases) + "```" if purchases else "```Нет```", inline=False)
@@ -910,6 +1149,9 @@ async def slash_commands(interaction: discord.Interaction):
             ("!невыдано", "📋 Список к выдаче"),
             ("!выдано @user", "✅ Выдать предметы"),
             ("!выдано", "✅ Выдать всё всем"),
+            ("!сбросить_выдачу @user", "🔄 Сбросить ожидание выдачи у пользователя"),
+            ("!сбросить_выдачу @user товар", "🔄 Сбросить конкретный товар"),
+            ("!сбросить_все_выдачи", "🔄 Сбросить все ожидания у всех"),
             ("!статистика", "📊 Статистика магазина"),
             ("!админы", "👑 Список админов"),
             ("!добавить_админа @user", "➕ Добавить админа (главный)"),
@@ -1056,6 +1298,7 @@ async def deliver_command(ctx, member: discord.Member = None):
         if user_id in data:
             count = 0
             items_list = []
+            total_refund = 0
             for item in data[user_id].get("pending_items", []):
                 if not item.get("delivered"):
                     item["delivered"] = True
@@ -1085,23 +1328,6 @@ async def deliver_command(ctx, member: discord.Member = None):
                 embed.add_field(name="Предметы", value="\n".join(items_list) if items_list else "—", inline=False)
                 embed.set_footer(text="by Ilya Vetrov")
                 await ctx.send(embed=embed)
-                
-                # Отправляем уведомление в админский канал
-                admin_channel = bot.get_channel(ADMIN_CHANNEL_ID)
-                if admin_channel:
-                    notify_embed = discord.Embed(
-                        title="📦 ВЫДАН ТОВАР ИЗ МАГАЗИНА",
-                        description=f"Администратор **{ctx.author.name}** выдал товары пользователю {member.mention}",
-                        color=0x2ecc71,
-                        timestamp=datetime.now()
-                    )
-                    notify_embed.add_field(name="Количество предметов", value=f"```{count} шт.```", inline=True)
-                    notify_embed.add_field(name="Список", value="\n".join(items_list) if items_list else "—", inline=False)
-                    notify_embed.set_footer(text="Теперь нужно выдать товар тому кто выдал")
-                    
-                    # Создаем кнопку для выдачи товара тому кто выдал
-                    view = ReturnDeliveryView(ctx.author.id, member.id, "товары", count, "", "")
-                    await admin_channel.send(f"<@{NOTIFY_USER_IDS[0]}> <@{NOTIFY_USER_IDS[1]}>", embed=notify_embed, view=view)
                 
                 try:
                     user_embed = discord.Embed(
@@ -1150,21 +1376,6 @@ async def deliver_command(ctx, member: discord.Member = None):
             )
             embed.set_footer(text="by Ilya Vetrov")
             await ctx.send(embed=embed)
-            
-            # Отправляем уведомление в админский канал
-            admin_channel = bot.get_channel(ADMIN_CHANNEL_ID)
-            if admin_channel:
-                notify_embed = discord.Embed(
-                    title="📦 МАССОВАЯ ВЫДАЧА ТОВАРОВ",
-                    description=f"Администратор **{ctx.author.name}** выдал товары **ВСЕМ** пользователям",
-                    color=0x2ecc71,
-                    timestamp=datetime.now()
-                )
-                notify_embed.add_field(name="Всего выдано предметов", value=f"```{total} шт.```", inline=True)
-                notify_embed.set_footer(text="Теперь нужно выдать товар тому кто выдал")
-                
-                view = ReturnDeliveryView(ctx.author.id, None, "товары", total, "", "")
-                await admin_channel.send(f"<@{NOTIFY_USER_IDS[0]}> <@{NOTIFY_USER_IDS[1]}>", embed=notify_embed, view=view)
         else:
             await ctx.send("📦 Нет предметов к выдаче")
 
@@ -1181,12 +1392,14 @@ async def stats_command(ctx):
     delivered = 0
     spent = 0
     total_balance = 0
+    cancelled = 0
     
     for user_data in data.values():
-        pending += sum(item.get("quantity", 1) for item in user_data.get("pending_items", []) if not item.get("delivered"))
+        pending += sum(item.get("quantity", 1) for item in user_data.get("pending_items", []) if not item.get("delivered") and not item.get("cancelled"))
         delivered += len(user_data.get("inventory", []))
-        spent += sum(p.get("total", 0) for p in user_data.get("all_purchases", []))
+        spent += sum(p.get("total", 0) for p in user_data.get("all_purchases", []) if not p.get("cancelled"))
         total_balance += user_data.get("balance", 0)
+        cancelled += sum(1 for item in user_data.get("pending_items", []) if item.get("cancelled"))
     
     embed = discord.Embed(
         title="📊 СТАТИСТИКА МАГАЗИНА",
@@ -1197,6 +1410,7 @@ async def stats_command(ctx):
     embed.add_field(name="💰 Всего монет", value=f"```{total_balance}```", inline=True)
     embed.add_field(name="⏳ Ожидают выдачи", value=f"```{pending} шт.```", inline=True)
     embed.add_field(name="✅ Уже выдано", value=f"```{delivered} шт.```", inline=True)
+    embed.add_field(name="❌ Отменено", value=f"```{cancelled} шт.```", inline=True)
     embed.add_field(name="💸 Всего потрачено", value=f"```{spent} монет```", inline=True)
     embed.set_footer(text="by Ilya Vetrov")
     
@@ -1251,6 +1465,7 @@ async def add_admin_command(ctx, user: discord.User):
                           value="• Выдавать монеты (`!датьмонет`)\n"
                                 "• Смотреть список невыданного (`!невыдано`)\n"
                                 "• Отмечать предметы как выданные (`!выдано`)\n"
+                                "• Сбрасывать ожидание выдачи (`!сбросить_выдачу`)\n"
                                 "• Смотреть статистику (`!статистика`)", 
                           inline=False)
         dm_embed.set_footer(text="by Ilya Vetrov")
@@ -1313,6 +1528,97 @@ async def list_admins_command(ctx):
     embed.set_footer(text=f"Всего админов: {len(ADMIN_IDS)} | by Ilya Vetrov")
     
     await ctx.send(embed=embed)
+
+@bot.command(name='объявление')
+async def announcement_command(ctx, *, текст: str):
+    if not is_admin(ctx.author.id):
+        await ctx.send("❌ Только администраторы могут использовать эту команду!")
+        return
+    
+    announce_channel = bot.get_channel(ANNOUNCE_CHANNEL_ID)
+    if not announce_channel:
+        await ctx.send(f"❌ Канал <#{ANNOUNCE_CHANNEL_ID}> не найден!")
+        return
+    
+    embed = discord.Embed(
+        title="📢 ОБЪЯВЛЕНИЕ АДМИНИСТРАЦИИ",
+        description=текст,
+        color=0x9b59b6,
+        timestamp=datetime.now()
+    )
+    embed.set_author(
+        name=ctx.author.name, 
+        icon_url=ctx.author.avatar.url if ctx.author.avatar else None
+    )
+    embed.set_footer(text="by Ilya Vetrov")
+    
+    await announce_channel.send(embed=embed)
+    await ctx.send(f"✅ Объявление отправлено в канал <#{ANNOUNCE_CHANNEL_ID}>")
+
+@bot.command(name='объявление_срочное')
+async def announcement_urgent_command(ctx, *, текст: str):
+    if not is_admin(ctx.author.id):
+        await ctx.send("❌ Только администраторы могут использовать эту команду!")
+        return
+    
+    announce_channel = bot.get_channel(ANNOUNCE_CHANNEL_ID)
+    if not announce_channel:
+        await ctx.send(f"❌ Канал <#{ANNOUNCE_CHANNEL_ID}> не найден!")
+        return
+    
+    embed = discord.Embed(
+        title="🚨 СРОЧНОЕ ОБЪЯВЛЕНИЕ",
+        description=текст,
+        color=0xe74c3c,
+        timestamp=datetime.now()
+    )
+    embed.set_author(
+        name=ctx.author.name, 
+        icon_url=ctx.author.avatar.url if ctx.author.avatar else None
+    )
+    embed.set_footer(text="by Ilya Vetrov")
+    
+    await announce_channel.send("@everyone", embed=embed)
+    await ctx.send(f"✅ Срочное объявление отправлено в канал <#{ANNOUNCE_CHANNEL_ID}>")
+
+@bot.command(name='объявление_embed')
+async def announcement_embed_command(ctx, цвет: str, заголовок: str, *, текст: str):
+    if not is_admin(ctx.author.id):
+        await ctx.send("❌ Только администраторы могут использовать эту команду!")
+        return
+    
+    color_map = {
+        "красный": 0xe74c3c,
+        "зеленый": 0x2ecc71,
+        "синий": 0x3498db,
+        "желтый": 0xf1c40f,
+        "фиолетовый": 0x9b59b6,
+        "оранжевый": 0xe67e22,
+        "розовый": 0xe91e63,
+        "голубой": 0x00ffff
+    }
+    
+    color = color_map.get(цвет.lower(), 0x3498db)
+    
+    announce_channel = bot.get_channel(ANNOUNCE_CHANNEL_ID)
+    if not announce_channel:
+        await ctx.send(f"❌ Канал <#{ANNOUNCE_CHANNEL_ID}> не найден!")
+        return
+    
+    embed = discord.Embed(
+        title=заголовок,
+        description=текст,
+        color=color,
+        timestamp=datetime.now()
+    )
+    embed.set_author(
+        name=ctx.author.name, 
+        icon_url=ctx.author.avatar.url if ctx.author.avatar else None
+    )
+    embed.set_footer(text="by Ilya Vetrov")
+    
+    await announce_channel.send(embed=embed)
+    await ctx.send(f"✅ Объявление отправлено в канал <#{ANNOUNCE_CHANNEL_ID}>")
 
 # ==================== СОБЫТИЯ ====================
 
