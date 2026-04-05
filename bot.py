@@ -750,6 +750,27 @@ class PurchaseModal(Modal, title="🛒 Оформление покупки"):
         data[user_id]["name"] = interaction.user.name
         save_data(data)
         
+        # Уведомляем указанных пользователей о покупке
+        for user_id_to_notify in NOTIFY_USER_IDS:
+            try:
+                user_to_notify = await bot.fetch_user(user_id_to_notify)
+                if user_to_notify:
+                    notify_embed = discord.Embed(
+                        title="🛒 НОВАЯ ПОКУПКА!",
+                        description=f"Пользователь **{interaction.user.name}** совершил покупку!",
+                        color=0x2ecc71,
+                        timestamp=datetime.now()
+                    )
+                    notify_embed.add_field(name="📦 Товар", value=f"```{self.item_name}```", inline=True)
+                    notify_embed.add_field(name="🔢 Количество", value=f"```{quantity} шт.```", inline=True)
+                    notify_embed.add_field(name="💰 Сумма", value=f"```{total_price} монет```", inline=True)
+                    notify_embed.add_field(name="👤 Никнейм", value=f"```{self.nickname.value}```", inline=True)
+                    notify_embed.add_field(name="🆔 CID", value=f"```{self.cid.value}```", inline=True)
+                    notify_embed.set_footer(text="by Ilya Vetrov")
+                    await user_to_notify.send(embed=notify_embed)
+            except Exception as e:
+                print(f"❌ Не удалось отправить уведомление пользователю {user_id_to_notify}: {e}")
+        
         special_note = ""
         if self.item_name == "⚡ Максимальный ур. выносливости":
             special_note = "\n❗ Вы должны быть в игре чтобы товар был выдан"
@@ -807,7 +828,6 @@ class ShopView(View):
         
         self.shop_items = [
             {"name": "💊 Реанимнабор", "price": 50},
-            {"name": "💉 Набор для самореанимации", "price": 50},
             {"name": "🛡️ Ремкоплект для брони", "price": 10},
             {"name": "🔫 MG Ammo", "price": 5, "note": "за 100 шт"},
             {"name": "🎯 Sniper Ammo", "price": 50, "note": "за 10 шт"},
@@ -937,7 +957,6 @@ async def slash_shop(interaction: discord.Interaction):
         name="📦 **Глава 1: Расходники**",
         value="```"
               "💊 Реанимнабор                      50 монет/шт\n"
-              "💉 Набор самореанимации              50 монет/шт\n"
               "🛡️ Ремкоплект для брони             10 монет/шт\n"
               "🔫 MG Ammo                            5 монет/100 шт\n"
               "🎯 Sniper Ammo                       50 монет/10 шт\n"
@@ -1146,6 +1165,7 @@ async def slash_commands(interaction: discord.Interaction):
         admin_text = ""
         admin_commands = [
             ("!датьмонет @user сумма", "💰 Выдать монеты"),
+            ("!забрать_монеты @user сумма", "💸 Забрать монеты"),
             ("!невыдано", "📋 Список к выдаче"),
             ("!выдано @user", "✅ Выдать предметы"),
             ("!выдано", "✅ Выдать всё всем"),
@@ -1228,6 +1248,63 @@ async def give_money_command(ctx, member: discord.Member, amount: int):
             inline=False
         )
         dm_embed.set_thumbnail(url=ctx.author.avatar.url if ctx.author.avatar else None)
+        dm_embed.set_footer(text="by Ilya Vetrov")
+        
+        await member.send(embed=dm_embed)
+    except:
+        pass
+
+@bot.command(name='забрать_монеты')
+async def take_money_command(ctx, member: discord.Member, amount: int):
+    """Забрать монеты у пользователя (только для администраторов)"""
+    if not is_admin(ctx.author.id):
+        await ctx.send("❌ Только администраторы могут использовать эту команду!")
+        return
+    
+    if amount <= 0:
+        await ctx.send("❌ Количество должно быть положительным числом!")
+        return
+    
+    data = load_data()
+    user_id = str(member.id)
+    
+    if user_id not in data:
+        await ctx.send(f"❌ Пользователь {member.mention} не зарегистрирован в базе данных!")
+        return
+    
+    текущий_баланс = data[user_id].get("balance", 0)
+    
+    if текущий_баланс < amount:
+        await ctx.send(f"❌ Недостаточно монет! У {member.mention} всего {текущий_баланс} монет.")
+        return
+    
+    старый_баланс = текущий_баланс
+    data[user_id]["balance"] -= amount
+    save_data(data)
+    
+    embed = discord.Embed(
+        title="💸 МОНЕТЫ ЗАБРАНЫ",
+        color=0xe74c3c,
+        timestamp=datetime.now()
+    )
+    embed.add_field(name="Администратор", value=f"```{ctx.author.name}```", inline=True)
+    embed.add_field(name="У кого забрали", value=member.mention, inline=True)
+    embed.add_field(name="Сумма", value=f"```-{amount} монет```", inline=True)
+    embed.add_field(name="Было", value=f"```{старый_баланс} монет```", inline=True)
+    embed.add_field(name="Стало", value=f"```{data[user_id]['balance']} монет```", inline=True)
+    embed.set_footer(text="by Ilya Vetrov")
+    
+    await ctx.send(embed=embed)
+    
+    try:
+        dm_embed = discord.Embed(
+            title="💸 У ВАС ЗАБРАЛИ МОНЕТЫ",
+            description=f"Администратор **{ctx.author.name}** забрал у вас монеты.",
+            color=0xe74c3c,
+            timestamp=datetime.now()
+        )
+        dm_embed.add_field(name="Сумма", value=f"```-{amount} монет```", inline=True)
+        dm_embed.add_field(name="Ваш баланс", value=f"```{data[user_id]['balance']} монет```", inline=True)
         dm_embed.set_footer(text="by Ilya Vetrov")
         
         await member.send(embed=dm_embed)
@@ -1463,6 +1540,7 @@ async def add_admin_command(ctx, user: discord.User):
         )
         dm_embed.add_field(name="Ваши новые возможности", 
                           value="• Выдавать монеты (`!датьмонет`)\n"
+                                "• Забирать монеты (`!забрать_монеты`)\n"
                                 "• Смотреть список невыданного (`!невыдано`)\n"
                                 "• Отмечать предметы как выданные (`!выдано`)\n"
                                 "• Сбрасывать ожидание выдачи (`!сбросить_выдачу`)\n"
@@ -1503,7 +1581,7 @@ async def remove_admin_command(ctx, user: discord.User):
     
     await ctx.send(embed=embed)
 
-@bot.command(name='список_админов')
+@bot.command(name='админы')
 async def list_admins_command(ctx):
     admin_list = []
     for admin_id in ADMIN_IDS:
