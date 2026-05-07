@@ -1,3 +1,25 @@
+import subprocess
+import sys
+import importlib
+
+# Автоустановка недостающих модулей
+def install(package):
+    subprocess.check_call([sys.executable, "-m", "pip", "install", package])
+
+required_packages = {
+    'asyncpg': 'asyncpg',
+    'discord': 'discord.py'
+}
+
+for module, package in required_packages.items():
+    try:
+        importlib.import_module(module)
+        print(f"✅ {package} уже установлен")
+    except ImportError:
+        print(f"📦 Устанавливаю {package}...")
+        install(package)
+        print(f"✅ {package} установлен")
+
 import discord
 from discord.ext import commands
 from discord import app_commands
@@ -8,7 +30,6 @@ from datetime import datetime
 
 # ==================== НАСТРОЙКИ ====================
 
-# Конфигурация базы данных PostgreSQL
 DB_CONFIG = {
     'host': 'node1.pghost.ru',
     'port': 15654,
@@ -17,19 +38,14 @@ DB_CONFIG = {
     'password': 'FxTHYBq3OwRPZ3Ge4Y3BpYxkWQG9Jqbpd3Trn7cx9OE'
 }
 
-# Главный админ (только он может добавлять других)
 MAIN_ADMIN_ID = 927642459998138418
-
-# Список администраторов (будет дополняться из БД)
 ADMIN_IDS = [927642459998138418, 500965898476322817]
 
-# ID каналов
 BALANCE_CHANNEL_ID = 1481753586835783861
 SHOP_CHANNEL_ID = 1481753891124019302
 ADMIN_CHANNEL_ID = 1481754087614841033
 ANNOUNCE_CHANNEL_ID = 1483097607424446514
 
-# ID пользователей для уведомлений о выдаче
 NOTIFY_USER_IDS = [271067502102970371, 1048236913447940106]
 
 # ==================== БОТ ====================
@@ -44,10 +60,8 @@ class ShopBot(commands.Bot):
         self.db_pool = None
 
     async def setup_hook(self):
-        # Подключение к PostgreSQL
         self.db_pool = await asyncpg.create_pool(**DB_CONFIG, min_size=2, max_size=10)
-        
-        # Создаём все таблицы если их нет
+
         async with self.db_pool.acquire() as conn:
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS users (
@@ -55,11 +69,9 @@ class ShopBot(commands.Bot):
                     balance INTEGER NOT NULL DEFAULT 0,
                     name VARCHAR(255)
                 );
-                
                 CREATE TABLE IF NOT EXISTS admins (
                     user_id BIGINT PRIMARY KEY
                 );
-                
                 CREATE TABLE IF NOT EXISTS purchases (
                     id SERIAL PRIMARY KEY,
                     purchase_id VARCHAR(255) UNIQUE,
@@ -75,7 +87,6 @@ class ShopBot(commands.Bot):
                     delivered_by VARCHAR(255),
                     delivered_date TIMESTAMP
                 );
-                
                 CREATE TABLE IF NOT EXISTS inventory (
                     id SERIAL PRIMARY KEY,
                     user_id BIGINT NOT NULL,
@@ -85,37 +96,24 @@ class ShopBot(commands.Bot):
                     nickname VARCHAR(100),
                     cid VARCHAR(50)
                 );
-                
                 CREATE INDEX IF NOT EXISTS idx_purchases_user ON purchases(user_id);
                 CREATE INDEX IF NOT EXISTS idx_purchases_status ON purchases(status);
                 CREATE INDEX IF NOT EXISTS idx_inventory_user ON inventory(user_id);
             """)
-            
-            # Загружаем админов из БД
+
             rows = await conn.fetch("SELECT user_id FROM admins")
             for r in rows:
                 if r['user_id'] not in ADMIN_IDS:
                     ADMIN_IDS.append(r['user_id'])
-            
-            # Добавляем главного админа в БД если его там нет
-            await conn.execute(
-                "INSERT INTO admins (user_id) VALUES ($1) ON CONFLICT DO NOTHING", 
-                MAIN_ADMIN_ID
-            )
-            
-            # Добавляем остальных админов из списка
+
+            await conn.execute("INSERT INTO admins (user_id) VALUES ($1) ON CONFLICT DO NOTHING", MAIN_ADMIN_ID)
             for admin_id in ADMIN_IDS:
-                await conn.execute(
-                    "INSERT INTO admins (user_id) VALUES ($1) ON CONFLICT DO NOTHING",
-                    admin_id
-                )
-        
+                await conn.execute("INSERT INTO admins (user_id) VALUES ($1) ON CONFLICT DO NOTHING", admin_id)
+
         await self.tree.sync()
         print(f"✅ Бот запущен! БД подключена. Админов: {len(ADMIN_IDS)}")
 
 bot = ShopBot()
-
-# ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
 
 def is_admin(user_id):
     return user_id in ADMIN_IDS
@@ -133,58 +131,45 @@ def is_allowed_channel(channel_id, command_type):
         return channel_id == BALANCE_CHANNEL_ID
     return channel_id == SHOP_CHANNEL_ID
 
-# ==================== ФУНКЦИИ БАЗЫ ДАННЫХ ====================
-
-async def db_get_user(user_id: int):
-    """Получить данные пользователя"""
-    async with bot.db_pool.acquire() as conn:
-        row = await conn.fetchrow("SELECT * FROM users WHERE id = $1", user_id)
-        return dict(row) if row else None
+# ==================== ФУНКЦИИ БД ====================
 
 async def db_get_balance(user_id: int) -> int:
-    """Получить баланс пользователя"""
     async with bot.db_pool.acquire() as conn:
         row = await conn.fetchrow("SELECT balance FROM users WHERE id = $1", user_id)
         return row['balance'] if row else 0
 
-async def db_add_balance(user_id: int, amount: int, name: str = None):
-    """Добавить монеты пользователю"""
-    async with bot.db_pool.acquire() as conn:
-        await conn.execute("""
-            INSERT INTO users (id, balance, name) VALUES ($1, $2, $3)
-            ON CONFLICT (id) DO UPDATE SET balance = users.balance + $2, name = COALESCE($3, users.name)
-        """, user_id, amount, name)
-
 async def db_set_balance(user_id: int, amount: int, name: str = None):
-    """Установить баланс пользователю"""
     async with bot.db_pool.acquire() as conn:
         await conn.execute("""
             INSERT INTO users (id, balance, name) VALUES ($1, $2, $3)
             ON CONFLICT (id) DO UPDATE SET balance = $2, name = COALESCE($3, users.name)
         """, user_id, amount, name)
 
-async def db_create_purchase(user_id: int, item_name: str, price: int, 
+async def db_add_balance(user_id: int, amount: int, name: str = None):
+    async with bot.db_pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO users (id, balance, name) VALUES ($1, $2, $3)
+            ON CONFLICT (id) DO UPDATE SET balance = users.balance + $2, name = COALESCE($3, users.name)
+        """, user_id, amount, name)
+
+async def db_create_purchase(user_id: int, item_name: str, price: int,
                               quantity: int, nickname: str, cid: str, total: int) -> str:
-    """Создать запись о покупке"""
     purchase_id = f"{user_id}_{datetime.now().timestamp()}"
     async with bot.db_pool.acquire() as conn:
         await conn.execute("""
             INSERT INTO purchases (purchase_id, user_id, item_name, price, quantity, total,
                                    nickname, cid, purchase_date, status)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending')
-        """, purchase_id, user_id, item_name, price, quantity, total, 
-             nickname, cid, datetime.now())
+        """, purchase_id, user_id, item_name, price, quantity, total, nickname, cid, datetime.now())
     return purchase_id
 
 async def db_deliver_purchase(purchase_id: str, delivered_by: str, buyer_id: int,
                                item_name: str, quantity: int, nickname: str, cid: str):
-    """Отметить покупку как выданную и добавить в инвентарь"""
     async with bot.db_pool.acquire() as conn:
         await conn.execute("""
             UPDATE purchases SET status='delivered', delivered_by=$1, delivered_date=NOW()
             WHERE purchase_id=$2 AND status='pending'
         """, delivered_by, purchase_id)
-        
         for _ in range(quantity):
             await conn.execute("""
                 INSERT INTO inventory (user_id, item_name, received_date, received_by, nickname, cid)
@@ -192,7 +177,6 @@ async def db_deliver_purchase(purchase_id: str, delivered_by: str, buyer_id: int
             """, buyer_id, item_name, delivered_by, nickname, cid)
 
 async def db_cancel_purchase(purchase_id: str, user_id: int, total: int):
-    """Отменить покупку и вернуть монеты"""
     async with bot.db_pool.acquire() as conn:
         await conn.execute("""
             UPDATE purchases SET status='cancelled' WHERE purchase_id=$1 AND status='pending'
@@ -200,14 +184,10 @@ async def db_cancel_purchase(purchase_id: str, user_id: int, total: int):
         await conn.execute("UPDATE users SET balance = balance + $1 WHERE id = $2", total, user_id)
 
 async def db_get_pending_count(user_id: int) -> int:
-    """Количество ожидающих выдачи товаров"""
     async with bot.db_pool.acquire() as conn:
-        return await conn.fetchval(
-            "SELECT COUNT(*) FROM purchases WHERE user_id=$1 AND status='pending'", user_id
-        )
+        return await conn.fetchval("SELECT COUNT(*) FROM purchases WHERE user_id=$1 AND status='pending'", user_id)
 
 async def db_get_all_pending():
-    """Все ожидающие выдачи покупки"""
     async with bot.db_pool.acquire() as conn:
         return await conn.fetch("""
             SELECT u.name as username, u.id as uid, p.*
@@ -216,23 +196,18 @@ async def db_get_all_pending():
         """)
 
 async def db_get_user_inventory(user_id: int, limit: int = 20):
-    """Инвентарь пользователя"""
     async with bot.db_pool.acquire() as conn:
         return await conn.fetch("""
-            SELECT * FROM inventory WHERE user_id=$1 
-            ORDER BY received_date DESC LIMIT $2
+            SELECT * FROM inventory WHERE user_id=$1 ORDER BY received_date DESC LIMIT $2
         """, user_id, limit)
 
 async def db_get_user_purchases(user_id: int, limit: int = 10):
-    """История покупок пользователя"""
     async with bot.db_pool.acquire() as conn:
         return await conn.fetch("""
-            SELECT * FROM purchases WHERE user_id=$1 
-            ORDER BY purchase_date DESC LIMIT $2
+            SELECT * FROM purchases WHERE user_id=$1 ORDER BY purchase_date DESC LIMIT $2
         """, user_id, limit)
 
 async def db_get_stats():
-    """Статистика магазина"""
     async with bot.db_pool.acquire() as conn:
         users = await conn.fetchval("SELECT COUNT(*) FROM users")
         total_balance = await conn.fetchval("SELECT COALESCE(SUM(balance), 0) FROM users")
@@ -240,51 +215,40 @@ async def db_get_stats():
         delivered = await conn.fetchval("SELECT COUNT(*) FROM inventory")
         cancelled = await conn.fetchval("SELECT COUNT(*) FROM purchases WHERE status='cancelled'")
         spent = await conn.fetchval("SELECT COALESCE(SUM(total), 0) FROM purchases WHERE status!='cancelled'")
-        return {
-            'users': users, 'total_balance': total_balance, 'pending': pending,
-            'delivered': delivered, 'cancelled': cancelled, 'spent': spent
-        }
+        return {'users': users, 'total_balance': total_balance, 'pending': pending,
+                'delivered': delivered, 'cancelled': cancelled, 'spent': spent}
 
 async def db_reset_pending_for_user(user_id: int, item_name: str = None) -> dict:
-    """Сбросить ожидание выдачи для пользователя"""
     async with bot.db_pool.acquire() as conn:
         if item_name:
             rows = await conn.fetch("""
-                UPDATE purchases SET status='cancelled' 
-                WHERE user_id=$1 AND status='pending' AND item_name ILIKE $2
+                UPDATE purchases SET status='cancelled' WHERE user_id=$1 AND status='pending' AND item_name ILIKE $2
                 RETURNING total
             """, user_id, f"%{item_name}%")
         else:
             rows = await conn.fetch("""
-                UPDATE purchases SET status='cancelled' 
-                WHERE user_id=$1 AND status='pending'
+                UPDATE purchases SET status='cancelled' WHERE user_id=$1 AND status='pending'
                 RETURNING total
             """, user_id)
-        
         total_refund = sum(r['total'] for r in rows) if rows else 0
         if total_refund > 0:
             await conn.execute("UPDATE users SET balance = balance + $1 WHERE id = $2", total_refund, user_id)
-        
         return {'count': len(rows) if rows else 0, 'refund': total_refund}
 
 async def db_reset_all_pending() -> dict:
-    """Сбросить все ожидания выдачи"""
     async with bot.db_pool.acquire() as conn:
         rows = await conn.fetch("""
             UPDATE purchases SET status='cancelled' WHERE status='pending'
             RETURNING user_id, total
         """)
-        
         refunds = {}
         for r in rows:
             refunds[r['user_id']] = refunds.get(r['user_id'], 0) + r['total']
-        
         for uid, amount in refunds.items():
             await conn.execute("UPDATE users SET balance = balance + $1 WHERE id = $2", amount, uid)
-        
         return {'count': len(rows) if rows else 0, 'refund': sum(refunds.values())}
 
-# ==================== VIEW ДЛЯ ПОДТВЕРЖДЕНИЯ ВЫДАЧИ ====================
+# ==================== КНОПКИ ====================
 
 class ConfirmDeliveryView(View):
     def __init__(self, buyer_id, item_name, quantity, nickname, cid, purchase_id, total_price):
@@ -306,12 +270,10 @@ class ConfirmDeliveryView(View):
         await db_deliver_purchase(self.purchase_id, interaction.user.name, self.buyer_id,
                                   self.item_name, self.quantity, self.nickname, self.cid)
 
-        # Уведомление покупателю
         try:
             buyer = await bot.fetch_user(self.buyer_id)
             if buyer:
-                embed = discord.Embed(title="✅ ТОВАР ВЫДАН!", 
-                                      description=f"Вам выдан: **{self.item_name}**", 
+                embed = discord.Embed(title="✅ ТОВАР ВЫДАН!", description=f"Вам выдан: **{self.item_name}**",
                                       color=0x2ecc71, timestamp=datetime.now())
                 embed.add_field(name="Количество", value=f"{self.quantity} шт.", inline=True)
                 embed.add_field(name="Выдал", value=interaction.user.name, inline=True)
@@ -327,11 +289,8 @@ class ConfirmDeliveryView(View):
         embed.title = "✅ ВЫДАЧА ПОДТВЕРЖДЕНА!"
         embed.description = f"**{interaction.user.name}** подтвердил выдачу товара"
         embed.set_footer(text="Товар выдан")
-        
         await interaction.message.edit(embed=embed, view=None)
         await interaction.response.send_message("✅ Выдача товара подтверждена!", ephemeral=True)
-
-# ==================== VIEW ДЛЯ ВЫДАЧИ ====================
 
 class DeliveryView(View):
     def __init__(self, user_id, item_name, quantity, nickname, cid, purchase_id, total_price):
@@ -350,12 +309,9 @@ class DeliveryView(View):
         if not admin_channel:
             return
 
-        embed = discord.Embed(
-            title="❓ ЗАПРОС НА ВЫДАЧУ ТОВАРА!",
-            description=f"**{interaction.user.name}** запросил выдачу товара. Требуется подтверждение.",
-            color=0xe74c3c,
-            timestamp=datetime.now()
-        )
+        embed = discord.Embed(title="❓ ЗАПРОС НА ВЫДАЧУ ТОВАРА!",
+                              description=f"**{interaction.user.name}** запросил выдачу товара.",
+                              color=0xe74c3c, timestamp=datetime.now())
         embed.add_field(name="👤 Кто запросил", value=f"```{interaction.user.name}```", inline=True)
         embed.add_field(name="👤 ID покупателя", value=f"```{self.user_id}```", inline=True)
         embed.add_field(name="📦 Товар", value=f"```{self.item_name}```", inline=True)
@@ -382,8 +338,7 @@ class DeliveryView(View):
         try:
             buyer = await bot.fetch_user(self.user_id)
             if buyer:
-                embed = discord.Embed(title="✅ ТОВАР ВЫДАН!",
-                                      description=f"Вам выдан товар: **{self.item_name}**",
+                embed = discord.Embed(title="✅ ТОВАР ВЫДАН!", description=f"Вам выдан товар: **{self.item_name}**",
                                       color=0x2ecc71, timestamp=datetime.now())
                 embed.add_field(name="Количество", value=f"```{self.quantity} шт.```", inline=True)
                 embed.add_field(name="Выдал", value=f"```{interaction.user.name}```", inline=True)
@@ -411,11 +366,9 @@ class DeliveryView(View):
         try:
             buyer = await bot.fetch_user(self.user_id)
             if buyer:
-                embed = discord.Embed(
-                    title="💰 ВОЗВРАТ МОНЕТ",
-                    description=f"Ваш заказ на **{self.item_name}** был отменен администратором.",
-                    color=0xf1c40f, timestamp=datetime.now()
-                )
+                embed = discord.Embed(title="💰 ВОЗВРАТ МОНЕТ",
+                                      description=f"Ваш заказ на **{self.item_name}** был отменен.",
+                                      color=0xf1c40f, timestamp=datetime.now())
                 embed.add_field(name="Возвращено", value=f"```+{self.total_price} монет```", inline=True)
                 embed.add_field(name="Причина", value="```Отказ в выдаче товара```", inline=True)
                 embed.set_footer(text="by Ilya Vetrov")
@@ -481,28 +434,19 @@ class PurchaseModal(Modal, title="🛒 Оформление покупки"):
         balance = await db_get_balance(interaction.user.id)
 
         if balance < total_price:
-            await interaction.response.send_message(
-                f"❌ Недостаточно средств! Нужно: {total_price} монет, у вас: {balance} монет",
-                ephemeral=True
-            )
+            await interaction.response.send_message(f"❌ Недостаточно средств! Нужно: {total_price}, у вас: {balance}", ephemeral=True)
             return
 
-        # Списываем монеты
         await db_set_balance(interaction.user.id, balance - total_price, interaction.user.name)
-        
-        # Создаём запись о покупке
-        purchase_id = await db_create_purchase(
-            interaction.user.id, self.item_name, self.item_price,
-            quantity, self.nickname.value, self.cid.value, total_price
-        )
+        purchase_id = await db_create_purchase(interaction.user.id, self.item_name, self.item_price,
+                                               quantity, self.nickname.value, self.cid.value, total_price)
 
-        # Уведомляем пользователей из списка
         for uid in NOTIFY_USER_IDS:
             try:
                 user = await bot.fetch_user(uid)
                 if user:
-                    embed = discord.Embed(title="🛒 НОВАЯ ПОКУПКА!", 
-                                          description=f"Пользователь **{interaction.user.name}** совершил покупку!",
+                    embed = discord.Embed(title="🛒 НОВАЯ ПОКУПКА!",
+                                          description=f"**{interaction.user.name}** совершил покупку!",
                                           color=0x2ecc71, timestamp=datetime.now())
                     embed.add_field(name="📦 Товар", value=f"```{self.item_name}```", inline=True)
                     embed.add_field(name="🔢 Количество", value=f"```{quantity} шт.```", inline=True)
@@ -524,16 +468,13 @@ class PurchaseModal(Modal, title="🛒 Оформление покупки"):
         embed.add_field(name="💰 Цена", value=f"```{total_price} монет```", inline=True)
         embed.add_field(name="👤 Никнейм", value=f"```{self.nickname.value}```", inline=True)
         embed.add_field(name="🆔 CID", value=f"```{self.cid.value}```", inline=True)
-
         if special_note:
             embed.add_field(name="⚠️ ВНИМАНИЕ", value=special_note, inline=False)
         else:
             embed.add_field(name="⏳ Статус", value="```Ожидает выдачи администратором```", inline=False)
-
         embed.set_footer(text="by Ilya Vetrov")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-        # Отправляем в админский канал
         admin_channel = bot.get_channel(ADMIN_CHANNEL_ID)
         if admin_channel:
             admin_embed = discord.Embed(title="🛒 НОВАЯ ПОКУПКА!", color=0xe74c3c, timestamp=datetime.now())
@@ -543,15 +484,11 @@ class PurchaseModal(Modal, title="🛒 Оформление покупки"):
             admin_embed.add_field(name="💰 Общая сумма", value=f"```{total_price} монет```", inline=True)
             admin_embed.add_field(name="👤 Никнейм", value=f"```{self.nickname.value}```", inline=True)
             admin_embed.add_field(name="🆔 CID", value=f"```{self.cid.value}```", inline=True)
-            
-            new_balance = balance - total_price
-            admin_embed.add_field(name="📊 Баланс после", value=f"```{new_balance} монет```", inline=False)
-            
+            admin_embed.add_field(name="📊 Баланс после", value=f"```{balance - total_price} монет```", inline=False)
             if self.item_name == "⚡ Максимальный ур. выносливости":
                 admin_embed.add_field(name="⚠️ ВНИМАНИЕ", value="❗ Требуется присутствие в игре для выдачи", inline=False)
-
             admin_embed.set_footer(text="by Ilya Vetrov")
-            view = DeliveryView(interaction.user.id, self.item_name, quantity, 
+            view = DeliveryView(interaction.user.id, self.item_name, quantity,
                                 self.nickname.value, self.cid.value, purchase_id, total_price)
             await admin_channel.send(embed=admin_embed, view=view)
 
@@ -585,8 +522,7 @@ class ShopView(View):
             label = item["name"]
             if "note" in item:
                 label += f" ({item['note']})"
-            options.append(discord.SelectOption(label=label, value=str(i), 
-                          description=f"{item['price']} монет"))
+            options.append(discord.SelectOption(label=label, value=str(i), description=f"{item['price']} монет"))
 
         self.select = Select(placeholder="🔍 Выберите товар...", options=options)
         self.select.callback = self.select_callback
@@ -621,19 +557,15 @@ class ShopView(View):
             return
 
         if not is_allowed_channel(interaction.channel_id, 'shop'):
-            await interaction.response.send_message(
-                f"❌ Покупки только в канале <#{SHOP_CHANNEL_ID}>", ephemeral=True
-            )
+            await interaction.response.send_message(f"❌ Покупки только в канале <#{SHOP_CHANNEL_ID}>", ephemeral=True)
             return
 
         balance = await db_get_balance(interaction.user.id)
 
         if balance < self.selected_item["price"]:
-            embed = discord.Embed(
-                title="❌ Недостаточно средств",
-                description=f"**Нужно:** {self.selected_item['price']} монет\n**У вас:** {balance} монет",
-                color=0xe74c3c
-            )
+            embed = discord.Embed(title="❌ Недостаточно средств",
+                                  description=f"**Нужно:** {self.selected_item['price']} монет\n**У вас:** {balance} монет",
+                                  color=0xe74c3c)
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
 
@@ -642,9 +574,7 @@ class ShopView(View):
 
     async def balance_callback(self, interaction: discord.Interaction):
         if not is_allowed_channel(interaction.channel_id, 'balance'):
-            await interaction.response.send_message(
-                f"❌ Баланс только в канале <#{BALANCE_CHANNEL_ID}>", ephemeral=True
-            )
+            await interaction.response.send_message(f"❌ Баланс только в канале <#{BALANCE_CHANNEL_ID}>", ephemeral=True)
             return
 
         balance = await db_get_balance(interaction.user.id)
@@ -666,55 +596,44 @@ async def slash_shop(interaction: discord.Interaction):
 
     view = ShopView()
 
-    embed = discord.Embed(
-        title="🛒 ДОБРО ПОЖАЛОВАТЬ В МАГАЗИН",
-        description="```Выберите товар и укажите количество```",
-        color=0x9b59b6,
-        timestamp=datetime.now()
-    )
+    embed = discord.Embed(title="🛒 ДОБРО ПОЖАЛОВАТЬ В МАГАЗИН",
+                          description="```Выберите товар и укажите количество```",
+                          color=0x9b59b6, timestamp=datetime.now())
 
-    embed.add_field(
-        name="📦 **Глава 1: Расходники**",
-        value="```"
-              "💊 Реанимнабор                      50 монет/шт\n"
-              "🛡️ Ремкоплект для брони             10 монет/шт\n"
-              "🔫 MG Ammo                            5 монет/100 шт\n"
-              "🎯 Sniper Ammo                       50 монет/10 шт\n"
-              "⚡ Максимальный ур. выносливости    300 монет/шт\n"
-              "⚡ Максимальный ур. выносливости - ❗ Вы должны быть в игре```",
-        inline=False
-    )
+    embed.add_field(name="📦 **Глава 1: Расходники**",
+                    value="```"
+                          "💊 Реанимнабор                      50 монет/шт\n"
+                          "🛡️ Ремкоплект для брони             10 монет/шт\n"
+                          "🔫 MG Ammo                            5 монет/100 шт\n"
+                          "🎯 Sniper Ammo                       50 монет/10 шт\n"
+                          "⚡ Максимальный ур. выносливости    300 монет/шт\n"
+                          "⚡ Максимальный ур. выносливости - ❗ Вы должны быть в игре```",
+                    inline=False)
 
-    embed.add_field(
-        name="⚙️ **Глава 2: Модули**",
-        value="```"
-              "🔇 Глушитель                         10 монет/шт\n"
-              "📦 Увеличенный магазин (винтовка)    80 монет/шт\n"
-              "📦 Увеличенный магазин (пистолет)    10 монет/шт\n"
-              "🥁 Барабанный магазин (ПП)           40 монет/шт\n"
-              "📦 Увеличенный магазин (снайперская) 45 монет/шт```",
-        inline=False
-    )
+    embed.add_field(name="⚙️ **Глава 2: Модули**",
+                    value="```"
+                          "🔇 Глушитель                         10 монет/шт\n"
+                          "📦 Увеличенный магазин (винтовка)    80 монет/шт\n"
+                          "📦 Увеличенный магазин (пистолет)    10 монет/шт\n"
+                          "🥁 Барабанный магазин (ПП)           40 монет/шт\n"
+                          "📦 Увеличенный магазин (снайперская) 45 монет/шт```",
+                    inline=False)
 
-    embed.add_field(
-        name="🔫 **Глава 3: Спец. вооружение**",
-        value="```"
-              "🔫 Тяжелый пулемет              65 монет/шт\n"
-              "⚡ Тяжелый пулемет MK2         300 монет/шт\n"
-              "🎯 Тяжелая снайперская         300 монет/шт\n"
-              "⭐ Тяжелая снайперская MK2     800 монет/шт\n"
-              "🔫 Штурмовой дробовик          500 монет/шт\n"
-              "🔫 Тяжелый револьвер MK2       400 монет/шт```",
-        inline=False
-    )
+    embed.add_field(name="🔫 **Глава 3: Спец. вооружение**",
+                    value="```"
+                          "🔫 Тяжелый пулемет              65 монет/шт\n"
+                          "⚡ Тяжелый пулемет MK2         300 монет/шт\n"
+                          "🎯 Тяжелая снайперская         300 монет/шт\n"
+                          "⭐ Тяжелая снайперская MK2     800 монет/шт\n"
+                          "🔫 Штурмовой дробовик          500 монет/шт\n"
+                          "🔫 Тяжелый револьвер MK2       400 монет/шт```",
+                    inline=False)
 
-    embed.add_field(
-        name="ℹ️ **Информация**",
-        value="• Максимальное количество: **1000 шт**\n"
-              "• При покупке укажите **никнейм и CID**\n"
-              "• Товары выдаются **в конце недели**",
-        inline=False
-    )
+    embed.add_field(name="ℹ️ **Информация**",
+                    value="• Максимальное количество: **1000 шт**\n"
+                          "• При покупке укажите **никнейм и CID**\n"
+                          "• Товары выдаются **в конце недели**",
+                    inline=False)
 
     embed.set_footer(text="by Ilya Vetrov")
     await interaction.response.send_message(embed=embed, view=view)
@@ -826,12 +745,9 @@ async def slash_commands(interaction: discord.Interaction):
 
     commands_text = ""
     for cmd, desc in [
-        ("/магазин", "🛒 Открыть магазин"),
-        ("/баланс", "💰 Проверить баланс"),
-        ("/инвентарь", "📦 Полученные предметы"),
-        ("/история", "📜 История покупок"),
-        ("/каналы", "📢 Информация о каналах"),
-        ("/команды", "📋 Этот список")
+        ("/магазин", "🛒 Открыть магазин"), ("/баланс", "💰 Проверить баланс"),
+        ("/инвентарь", "📦 Полученные предметы"), ("/история", "📜 История покупок"),
+        ("/каналы", "📢 Информация о каналах"), ("/команды", "📋 Этот список")
     ]:
         commands_text += f"**{cmd}** — {desc}\n"
     embed.add_field(name="📌 Основные команды", value=commands_text, inline=False)
@@ -845,7 +761,6 @@ async def slash_commands(interaction: discord.Interaction):
             ("!выдано @user", "✅ Выдать предметы"),
             ("!выдано", "✅ Выдать всё всем"),
             ("!сбросить_выдачу @user", "🔄 Сбросить ожидание выдачи"),
-            ("!сбросить_выдачу @user товар", "🔄 Сбросить конкретный товар"),
             ("!сбросить_все_выдачи", "🔄 Сбросить все ожидания"),
             ("!статистика", "📊 Статистика магазина"),
             ("!админы", "👑 Список админов"),
@@ -886,11 +801,9 @@ async def give_money_command(ctx, member: discord.Member, amount: int):
     await ctx.send(embed=embed)
 
     try:
-        dm_embed = discord.Embed(
-            title="💰 ВАМ НАЧИСЛЕНЫ МОНЕТЫ!",
-            description=f"Администратор **{ctx.author.name}** выдал вам монеты.",
-            color=0xf1c40f, timestamp=datetime.now()
-        )
+        dm_embed = discord.Embed(title="💰 ВАМ НАЧИСЛЕНЫ МОНЕТЫ!",
+                                 description=f"Администратор **{ctx.author.name}** выдал вам монеты.",
+                                 color=0xf1c40f, timestamp=datetime.now())
         dm_embed.add_field(name="Сумма", value=f"```+{amount} монет```", inline=True)
         dm_embed.add_field(name="Ваш баланс", value=f"```{new_balance} монет```", inline=True)
         dm_embed.add_field(name="💡 Как потратить?", value="Используйте `/магазин` чтобы купить товары!", inline=False)
@@ -926,11 +839,9 @@ async def take_money_command(ctx, member: discord.Member, amount: int):
     await ctx.send(embed=embed)
 
     try:
-        dm_embed = discord.Embed(
-            title="💸 У ВАС ЗАБРАЛИ МОНЕТЫ",
-            description=f"Администратор **{ctx.author.name}** забрал у вас монеты.",
-            color=0xe74c3c, timestamp=datetime.now()
-        )
+        dm_embed = discord.Embed(title="💸 У ВАС ЗАБРАЛИ МОНЕТЫ",
+                                 description=f"Администратор **{ctx.author.name}** забрал у вас монеты.",
+                                 color=0xe74c3c, timestamp=datetime.now())
         dm_embed.add_field(name="Сумма", value=f"```-{amount} монет```", inline=True)
         dm_embed.add_field(name="Ваш баланс", value=f"```{new_balance} монет```", inline=True)
         dm_embed.set_footer(text="by Ilya Vetrov")
@@ -950,18 +861,14 @@ async def pending_command(ctx):
         await ctx.send("📦 Нет предметов к выдаче!")
         return
 
-    embed = discord.Embed(
-        title="📋 ПРЕДМЕТЫ К ВЫДАЧЕ",
-        description=f"Всего: **{len(pending)}** позиций",
-        color=0xe67e22, timestamp=datetime.now()
-    )
+    embed = discord.Embed(title="📋 ПРЕДМЕТЫ К ВЫДАЧЕ",
+                          description=f"Всего: **{len(pending)}** позиций",
+                          color=0xe67e22, timestamp=datetime.now())
 
     for p in pending[:10]:
-        embed.add_field(
-            name=f"{p['username']} - {p['item_name']} x{p['quantity']}",
-            value=f"```💰 {p['total']} | Ник: {p['nickname']} | CID: {p['cid']} | {p['purchase_date'].strftime('%d.%m.%Y')}```",
-            inline=False
-        )
+        embed.add_field(name=f"{p['username']} - {p['item_name']} x{p['quantity']}",
+                        value=f"```💰 {p['total']} | Ник: {p['nickname']} | CID: {p['cid']} | {p['purchase_date'].strftime('%d.%m.%Y')}```",
+                        inline=False)
 
     embed.set_footer(text="by Ilya Vetrov")
     await ctx.send(embed=embed)
@@ -975,7 +882,7 @@ async def deliver_command(ctx, member: discord.Member = None):
     if member:
         pending = await db_get_all_pending()
         user_pending = [p for p in pending if p['uid'] == member.id]
-        
+
         if not user_pending:
             await ctx.send(f"📦 У {member.mention} нет предметов к выдаче")
             return
@@ -986,20 +893,16 @@ async def deliver_command(ctx, member: discord.Member = None):
                                       p['item_name'], p['quantity'], p['nickname'], p['cid'])
             count += p['quantity']
 
-        embed = discord.Embed(
-            title="✅ ПРЕДМЕТЫ ВЫДАНЫ",
-            description=f"Выдано **{count}** предметов {member.mention}",
-            color=0x2ecc71, timestamp=datetime.now()
-        )
+        embed = discord.Embed(title="✅ ПРЕДМЕТЫ ВЫДАНЫ",
+                              description=f"Выдано **{count}** предметов {member.mention}",
+                              color=0x2ecc71, timestamp=datetime.now())
         embed.set_footer(text="by Ilya Vetrov")
         await ctx.send(embed=embed)
 
         try:
-            dm_embed = discord.Embed(
-                title="✅ ТОВАРЫ ВЫДАНЫ!",
-                description=f"Администратор **{ctx.author.name}** выдал вам товары.",
-                color=0x2ecc71, timestamp=datetime.now()
-            )
+            dm_embed = discord.Embed(title="✅ ТОВАРЫ ВЫДАНЫ!",
+                                     description=f"Администратор **{ctx.author.name}** выдал вам товары.",
+                                     color=0x2ecc71, timestamp=datetime.now())
             dm_embed.add_field(name="Получено предметов", value=f"```{count} шт.```", inline=True)
             dm_embed.add_field(name="📦 Где посмотреть?", value="Используйте `/инвентарь`", inline=False)
             dm_embed.set_footer(text="by Ilya Vetrov")
@@ -1017,11 +920,9 @@ async def deliver_command(ctx, member: discord.Member = None):
                                       p['item_name'], p['quantity'], p['nickname'], p['cid'])
 
         total = sum(p['quantity'] for p in pending)
-        embed = discord.Embed(
-            title="✅ МАССОВАЯ ВЫДАЧА",
-            description=f"Выдано всего **{total}** предметов всем!",
-            color=0x2ecc71, timestamp=datetime.now()
-        )
+        embed = discord.Embed(title="✅ МАССОВАЯ ВЫДАЧА",
+                              description=f"Выдано всего **{total}** предметов всем!",
+                              color=0x2ecc71, timestamp=datetime.now())
         embed.set_footer(text="by Ilya Vetrov")
         await ctx.send(embed=embed)
 
@@ -1055,21 +956,17 @@ async def reset_pending_command(ctx, member: discord.Member, *, товар: str 
         await ctx.send(f"📦 У {member.mention} нет предметов в ожидании выдачи!")
         return
 
-    embed = discord.Embed(
-        title="🔄 СБРОС ОЖИДАНИЯ ВЫДАЧИ",
-        description=f"Сброшено **{result['count']}** позиций для {member.mention}",
-        color=0xf1c40f, timestamp=datetime.now()
-    )
+    embed = discord.Embed(title="🔄 СБРОС ОЖИДАНИЯ ВЫДАЧИ",
+                          description=f"Сброшено **{result['count']}** позиций для {member.mention}",
+                          color=0xf1c40f, timestamp=datetime.now())
     embed.add_field(name="Возвращено монет", value=f"```{result['refund']} монет```", inline=True)
     embed.set_footer(text="by Ilya Vetrov")
     await ctx.send(embed=embed)
 
     try:
-        dm_embed = discord.Embed(
-            title="🔄 СБРОС ОЖИДАНИЯ ВЫДАЧИ",
-            description=f"Администратор **{ctx.author.name}** сбросил статус ожидания выдачи ваших товаров.",
-            color=0xf1c40f, timestamp=datetime.now()
-        )
+        dm_embed = discord.Embed(title="🔄 СБРОС ОЖИДАНИЯ ВЫДАЧИ",
+                                 description=f"Администратор **{ctx.author.name}** сбросил статус ожидания выдачи.",
+                                 color=0xf1c40f, timestamp=datetime.now())
         dm_embed.add_field(name="Сброшено позиций", value=f"```{result['count']} шт.```", inline=True)
         dm_embed.add_field(name="Возвращено монет", value=f"```{result['refund']} монет```", inline=True)
         dm_embed.set_footer(text="by Ilya Vetrov")
@@ -1086,14 +983,12 @@ async def reset_all_pending_command(ctx):
     result = await db_reset_all_pending()
 
     if result['count'] == 0:
-        await ctx.send("📦 Нет активных ожиданий выдачи ни у одного пользователя!")
+        await ctx.send("📦 Нет активных ожиданий выдачи!")
         return
 
-    embed = discord.Embed(
-        title="🔄 СБРОС ВСЕХ ОЖИДАНИЙ ВЫДАЧИ",
-        description=f"Сброшено **{result['count']}** позиций для всех пользователей",
-        color=0xf1c40f, timestamp=datetime.now()
-    )
+    embed = discord.Embed(title="🔄 СБРОС ВСЕХ ОЖИДАНИЙ ВЫДАЧИ",
+                          description=f"Сброшено **{result['count']}** позиций для всех пользователей",
+                          color=0xf1c40f, timestamp=datetime.now())
     embed.add_field(name="Всего возвращено монет", value=f"```{result['refund']} монет```", inline=True)
     embed.set_footer(text="by Ilya Vetrov")
     await ctx.send(embed=embed)
@@ -1122,29 +1017,20 @@ async def add_admin_command(ctx, user: discord.User):
     async with bot.db_pool.acquire() as conn:
         await conn.execute("INSERT INTO admins (user_id) VALUES ($1) ON CONFLICT DO NOTHING", user.id)
 
-    embed = discord.Embed(
-        title="👑 НОВЫЙ АДМИНИСТРАТОР",
-        description=f"Главный админ **{ctx.author.name}** добавил нового администратора!",
-        color=0xf1c40f, timestamp=datetime.now()
-    )
+    embed = discord.Embed(title="👑 НОВЫЙ АДМИНИСТРАТОР",
+                          description=f"Главный админ **{ctx.author.name}** добавил нового администратора!",
+                          color=0xf1c40f, timestamp=datetime.now())
     embed.add_field(name="Новый админ", value=user.mention, inline=True)
     embed.add_field(name="ID", value=f"`{user.id}`", inline=True)
     embed.set_footer(text="by Ilya Vetrov")
     await ctx.send(embed=embed)
 
     try:
-        dm_embed = discord.Embed(
-            title="👑 ВАС НАЗНАЧИЛИ АДМИНИСТРОМ!",
-            description=f"Главный администратор **{ctx.author.name}** добавил вас в список администраторов.",
-            color=0xf1c40f
-        )
+        dm_embed = discord.Embed(title="👑 ВАС НАЗНАЧИЛИ АДМИНИСТРОМ!",
+                                 description=f"Главный администратор **{ctx.author.name}** добавил вас в администраторы.",
+                                 color=0xf1c40f)
         dm_embed.add_field(name="Ваши новые возможности",
-                          value="• Выдавать монеты (`!датьмонет`)\n"
-                                "• Забирать монеты (`!забрать_монеты`)\n"
-                                "• Смотреть список невыданного (`!невыдано`)\n"
-                                "• Отмечать предметы как выданные (`!выдано`)\n"
-                                "• Сбрасывать ожидание выдачи (`!сбросить_выдачу`)\n"
-                                "• Смотреть статистику (`!статистика`)", inline=False)
+                           value="• Выдавать монеты\n• Забирать монеты\n• Смотреть невыданное\n• Отмечать как выданное\n• Смотреть статистику", inline=False)
         dm_embed.set_footer(text="by Ilya Vetrov")
         await user.send(embed=dm_embed)
     except:
@@ -1166,11 +1052,9 @@ async def remove_admin_command(ctx, user: discord.User):
     async with bot.db_pool.acquire() as conn:
         await conn.execute("DELETE FROM admins WHERE user_id = $1", user.id)
 
-    embed = discord.Embed(
-        title="👑 АДМИНИСТРАТОР УДАЛЕН",
-        description=f"Главный админ **{ctx.author.name}** удалил администратора",
-        color=0xe74c3c, timestamp=datetime.now()
-    )
+    embed = discord.Embed(title="👑 АДМИНИСТРАТОР УДАЛЕН",
+                          description=f"Главный админ **{ctx.author.name}** удалил администратора",
+                          color=0xe74c3c, timestamp=datetime.now())
     embed.add_field(name="Бывший админ", value=user.mention, inline=True)
     embed.add_field(name="ID", value=f"`{user.id}`", inline=True)
     embed.set_footer(text="by Ilya Vetrov")
@@ -1182,22 +1066,14 @@ async def list_admins_command(ctx):
     for admin_id in ADMIN_IDS:
         try:
             user = await bot.fetch_user(admin_id)
-            if admin_id == MAIN_ADMIN_ID:
-                admin_list.append(f"👑 **{user.name}** (Главный админ)")
-            else:
-                admin_list.append(f"• {user.name}")
+            admin_list.append(f"👑 **{user.name}** (Главный)" if admin_id == MAIN_ADMIN_ID else f"• {user.name}")
         except:
-            if admin_id == MAIN_ADMIN_ID:
-                admin_list.append(f"👑 Админ (ID: {admin_id}) - Главный")
-            else:
-                admin_list.append(f"• Админ (ID: {admin_id})")
+            admin_list.append(f"• Админ ID: {admin_id}")
 
-    embed = discord.Embed(
-        title="👑 СПИСОК АДМИНИСТРАТОРОВ",
-        description="\n".join(admin_list),
-        color=0xf1c40f, timestamp=datetime.now()
-    )
-    embed.set_footer(text=f"Всего админов: {len(ADMIN_IDS)} | by Ilya Vetrov")
+    embed = discord.Embed(title="👑 СПИСОК АДМИНИСТРАТОРОВ",
+                          description="\n".join(admin_list),
+                          color=0xf1c40f, timestamp=datetime.now())
+    embed.set_footer(text=f"Всего: {len(ADMIN_IDS)} | by Ilya Vetrov")
     await ctx.send(embed=embed)
 
 @bot.command(name='объявление')
@@ -1206,17 +1082,16 @@ async def announcement_command(ctx, *, текст: str):
         await ctx.send("❌ Только администраторы!")
         return
 
-    announce_channel = bot.get_channel(ANNOUNCE_CHANNEL_ID)
-    if not announce_channel:
-        await ctx.send(f"❌ Канал <#{ANNOUNCE_CHANNEL_ID}> не найден!")
+    channel = bot.get_channel(ANNOUNCE_CHANNEL_ID)
+    if not channel:
+        await ctx.send(f"❌ Канал не найден!")
         return
 
-    embed = discord.Embed(title="📢 ОБЪЯВЛЕНИЕ АДМИНИСТРАЦИИ", description=текст,
-                          color=0x9b59b6, timestamp=datetime.now())
+    embed = discord.Embed(title="📢 ОБЪЯВЛЕНИЕ", description=текст, color=0x9b59b6, timestamp=datetime.now())
     embed.set_author(name=ctx.author.name, icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
     embed.set_footer(text="by Ilya Vetrov")
-    await announce_channel.send(embed=embed)
-    await ctx.send(f"✅ Объявление отправлено в канал <#{ANNOUNCE_CHANNEL_ID}>")
+    await channel.send(embed=embed)
+    await ctx.send("✅ Отправлено!")
 
 @bot.command(name='объявление_срочное')
 async def announcement_urgent_command(ctx, *, текст: str):
@@ -1224,17 +1099,16 @@ async def announcement_urgent_command(ctx, *, текст: str):
         await ctx.send("❌ Только администраторы!")
         return
 
-    announce_channel = bot.get_channel(ANNOUNCE_CHANNEL_ID)
-    if not announce_channel:
-        await ctx.send(f"❌ Канал <#{ANNOUNCE_CHANNEL_ID}> не найден!")
+    channel = bot.get_channel(ANNOUNCE_CHANNEL_ID)
+    if not channel:
+        await ctx.send(f"❌ Канал не найден!")
         return
 
-    embed = discord.Embed(title="🚨 СРОЧНОЕ ОБЪЯВЛЕНИЕ", description=текст,
-                          color=0xe74c3c, timestamp=datetime.now())
+    embed = discord.Embed(title="🚨 СРОЧНОЕ ОБЪЯВЛЕНИЕ", description=текст, color=0xe74c3c, timestamp=datetime.now())
     embed.set_author(name=ctx.author.name, icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
     embed.set_footer(text="by Ilya Vetrov")
-    await announce_channel.send("@everyone", embed=embed)
-    await ctx.send(f"✅ Срочное объявление отправлено в канал <#{ANNOUNCE_CHANNEL_ID}>")
+    await channel.send("@everyone", embed=embed)
+    await ctx.send("✅ Отправлено!")
 
 @bot.command(name='объявление_embed')
 async def announcement_embed_command(ctx, цвет: str, заголовок: str, *, текст: str):
@@ -1242,40 +1116,31 @@ async def announcement_embed_command(ctx, цвет: str, заголовок: str
         await ctx.send("❌ Только администраторы!")
         return
 
-    color_map = {
-        "красный": 0xe74c3c, "зеленый": 0x2ecc71, "синий": 0x3498db,
-        "желтый": 0xf1c40f, "фиолетовый": 0x9b59b6, "оранжевый": 0xe67e22,
-        "розовый": 0xe91e63, "голубой": 0x00ffff
-    }
+    color_map = {"красный": 0xe74c3c, "зеленый": 0x2ecc71, "синий": 0x3498db,
+                 "желтый": 0xf1c40f, "фиолетовый": 0x9b59b6, "оранжевый": 0xe67e22}
     color = color_map.get(цвет.lower(), 0x3498db)
 
-    announce_channel = bot.get_channel(ANNOUNCE_CHANNEL_ID)
-    if not announce_channel:
-        await ctx.send(f"❌ Канал <#{ANNOUNCE_CHANNEL_ID}> не найден!")
+    channel = bot.get_channel(ANNOUNCE_CHANNEL_ID)
+    if not channel:
+        await ctx.send(f"❌ Канал не найден!")
         return
 
     embed = discord.Embed(title=заголовок, description=текст, color=color, timestamp=datetime.now())
     embed.set_author(name=ctx.author.name, icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
     embed.set_footer(text="by Ilya Vetrov")
-    await announce_channel.send(embed=embed)
-    await ctx.send(f"✅ Объявление отправлено в канал <#{ANNOUNCE_CHANNEL_ID}>")
+    await channel.send(embed=embed)
+    await ctx.send("✅ Отправлено!")
 
 # ==================== ЗАПУСК ====================
 
 @bot.event
 async def on_ready():
-    print(f'\n{"="*50}')
-    print(f'✅ Бот {bot.user} успешно запущен!')
-    print(f'📋 Серверов: {len(bot.guilds)}')
-    print(f'👑 Админов: {len(ADMIN_IDS)}')
-    print(f'🗄️ База данных: PostgreSQL')
-    print(f'{"="*50}\n')
-    
+    print(f'✅ Бот {bot.user} запущен! Серверов: {len(bot.guilds)} | Админов: {len(ADMIN_IDS)} | БД: PostgreSQL')
     await bot.change_presence(activity=discord.Game(name="/команды | /магазин"))
 
 token = os.getenv('TOKEN')
 if not token:
-    print("❌ ОШИБКА: Токен не найден!")
+    print("❌ Токен не найден!")
     exit(1)
 
 print("🔄 Запуск бота...")
